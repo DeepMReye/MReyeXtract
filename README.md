@@ -4,7 +4,8 @@
 [![DeepMReye](https://img.shields.io/badge/built%20on-DeepMReye-orange.svg)](https://github.com/DeepMReye/DeepMReye)
 
 # MReyeXtract: eye-voxel extraction for fMRI
-<img src="media/brain.png" width="600" alt="Image of a brain with masks">
+<img src="media/brain.png" width="300" alt="Image of a brain with masks">
+
 MReyeXtract extracts the eyeballs from 4D BOLD images so they can be fed to
 [DeepMReye](https://github.com/DeepMReye/DeepMReye) or other gaze-decoding
 models. Each run is registered to a DeepMReye eye template with
