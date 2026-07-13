@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling>=1.18", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mreyextract"
+dynamic = ["version"]
+description = "Eye voxel extraction pipeline using templated eye masks."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+authors = [
+  { name = "Zach", email = "zachnudels@gmail.com" }
+]
+dependencies = [
+#  "tensorflow==2.15.0",
+    "numpy<2.0.0",
+    "nibabel>=5.3.2",
+    "antspyx>=0.6.1",
+    "scipy>=1.15.1",
+    "plotly>=6.5.0",
+    "pybids>=0.22.0",
+#  "nilearn>=0.12.1,<0.13.0",
+#  "jupyter>=1.1.1,<2.0.0",
+#  "fastparquet>=2024.11.0",
+#  "pydantic>=2.12",
+#  "nipype>=1.10",
+#  "statsmodels>=0.14",
+]
+
+[project.scripts]
+mreyextract = "mreyextract.extract:cli_main"
+#mreyemove-signal = "mreyemove.preprocessing.eye_move:cli_main"
+#mreyemove-glm = "mreyemove.analysis.glm.cli:cli_main"
+#mreyemove-fc-extract = "mreyemove.analysis.fc.extract_fc_matrices:cli_main"
+#mreyemove-derive = "mreyemove.preprocessing.cli:cli_main"
+
+#[project.entry-points."mreyemove.datasets"]
+#default = "mreyemove.data.mrio:MRIO"
+
+
+[project.optional-dependencies]
+dev = [
+  "black",
+  "isort",
+  "pytest",
+  "pytest-cov",
+  "mypy",
+  "pylint",
+  "pytest-mock",
+  "pytest-unordered"
+]
+
+[project.urls]
+homepage = "https://github.com/DeepMReye"
+#repository = "https://github.com/yourusername/mreyemove"
+
+# ---- Hatch config ----
+
+# Tell hatchling which *paths* to package.
+# For a src layout, these are paths, not just names.
+[tool.hatch.build.targets.wheel]
+packages = ["src/mreyextract"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/mreyextract",
+  "pyproject.toml",
+  "README.md",
+]
+
+# Version from git, written into src/mreyemove/_version.py
+[tool.hatch.build.hooks.vcs]
+version-file = "src/mreyextract/_version.py"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.coverage.run]
+omit = [
+    "tests/*",
+]
