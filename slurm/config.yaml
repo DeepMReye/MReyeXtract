@@ -1,0 +1,34 @@
+# MReyeXtract run configuration.
+#
+# The `extract` section seeds the `mreyextract` CLI: keys mirror the CLI
+# options (with underscores). Anything passed explicitly on the command line
+# overrides the value here. The `slurm` section is read by submit.sbatch only.
+
+extract:
+  root: /abs/path/to/bids_dataset
+  bids_compatible: true
+  derivatives_dir: fmriprep
+  as_pickle: false
+  force: false
+  log_level: INFO
+
+  # Per-task parallelism. On SLURM keep n_jobs * threads_per_job <= cpus_per_task.
+  # With one subject per array task, n_jobs: 1 and let ANTs use all the cores.
+  n_jobs: 1
+  threads_per_job: 4
+
+  # For non-BIDS trees only:
+  # glob_pattern: "sub-*/**/func/*_bold.nii*"
+
+  # BIDS entity filters. Scalars or lists; "*" -> any, "none"/"null" -> absent.
+  # Leave `subject` out here — submit.sbatch injects it per array task.
+  filters:
+    task: [rest]
+
+slurm:
+  partition: defq
+  time: "02:00:00"
+  cpus_per_task: 4
+  mem: 16G
+  # One array task per subject; index into this list with SLURM_ARRAY_TASK_ID.
+  subjects: ["01", "02", "03", "04"]

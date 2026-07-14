@@ -3,16 +3,21 @@ Preprocessing pipeline to clean and extract eye voxels from fmri data
 """
 
 import json
+import os
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import argparse
 import logging
 
+from joblib import Parallel, delayed
+from joblib.externals.loky import cpu_count as loky_cpu_count
+
 from bids.layout import Query
 from bids import BIDSLayout, BIDSLayoutIndexer
 
-from mreyextract import preprocess, enable_logging
+from mreyextract import preprocess, enable_logging, _ensure_worker_logging
 from mreyextract.io import mreyextract_root, RunPaths
 
 logger = logging.getLogger(__name__)
@@ -36,14 +41,22 @@ ENTITIES = {
 
 def strip_nifti_ext(name: str) -> str:
     """
-    Remove nifti extension from filename
+    Remove the NIfTI extension from a filename.
+
     Parameters
     ----------
     name : str
+        Filename ending in ``.nii`` or ``.nii.gz``.
 
     Returns
     -------
+    str
+        ``name`` with the trailing ``.nii``/``.nii.gz`` extension removed.
 
+    Raises
+    ------
+    ValueError
+        If ``name`` does not end in a recognised NIfTI extension.
     """
     for ext in (".nii.gz", ".nii"):
         if name.endswith(ext):
@@ -59,18 +72,35 @@ def non_bids_paths(
     force: bool = False,
 ):
     """
+    Build the input/output paths for a plain (non-BIDS) directory tree.
 
     Parameters
     ----------
-    root : Path
+    root : Path | str
+        Directory to search for BOLD files.
     glob_pattern : str
-    output_dir : Path,
-    as_pickle : bool
-    force : bool = False
+        Glob, relative to ``root``, selecting candidate BOLD files
+        (e.g. ``"sub-*/**/func/*_bold.nii*"``).
+    output_dir : Path
+        Derivatives directory that outputs are written under. Files already
+        inside it are skipped so its own outputs are never re-ingested.
+    as_pickle : bool, optional
+        If ``True`` the eye output uses a ``.p`` (pickle) extension instead of
+        ``.nii.gz``. Default ``False``.
+    force : bool, optional
+        If ``True`` include runs whose output already exists; otherwise they are
+        skipped. Default ``False``.
 
     Returns
     -------
+    list[RunPaths]
+        One :class:`~mreyextract.io.RunPaths` per BOLD file to process, mirroring
+        the input layout under ``output_dir``.
 
+    Raises
+    ------
+    ValueError
+        If two different inputs map to the same eye-output path.
     """
     ext = ".p" if as_pickle else ".nii.gz"
 
@@ -119,16 +149,26 @@ def make_layout(
     derivatives_dir: str | Path | None,
 ) -> BIDSLayout:
     """
-    Make a BIDSLayout for the given args
+    Build a :class:`~bids.BIDSLayout` for the given dataset.
 
     Parameters
     ----------
-    root: str | Path
-    derivatives_dir: str | Path | None
+    root : str | Path
+        BIDS dataset root.
+    derivatives_dir : str | Path | None
+        Relative derivatives pipeline to index under ``root/derivatives``
+        (e.g. ``"fmriprep"``). When ``None`` the raw dataset at ``root`` is
+        indexed instead.
 
     Returns
     -------
+    BIDSLayout
+        A validation-free layout indexed without metadata for speed.
 
+    Raises
+    ------
+    FileNotFoundError
+        If the resolved target directory does not exist.
     """
     if derivatives_dir is None:
         target = Path(root)
@@ -157,20 +197,36 @@ def bids_paths(  # pylint: disable=too-many-locals
     as_pickle: bool = False,
 ) -> list[RunPaths]:
     """
+    Build the input/output paths for a BIDS dataset.
 
     Parameters
     ----------
     root : str | Path
+        BIDS dataset root.
     derivatives_dir : str | Path | None
+        Relative derivatives pipeline to extract from (e.g. ``"fmriprep"``), or
+        ``None`` to use the raw dataset.
     output_dir : Path
-    filters : dict[str, str] | None
-    force: bool
-    as_pickle : bool
+        Derivatives directory that outputs are written under.
+    filters : dict[str, str] | None, optional
+        Extra BIDS entity filters passed to ``layout.get`` (e.g.
+        ``{"task": "rest"}``). Default ``None`` (no additional filtering).
+    force : bool, optional
+        If ``True`` include runs whose output already exists; otherwise they are
+        skipped. Default ``False``.
+    as_pickle : bool, optional
+        If ``True`` the eye output uses the ``timeseries``/``.p`` (pickle)
+        naming instead of ``bold``/``.nii.gz``. Default ``False``.
 
     Returns
     -------
     list[RunPaths]
+        One :class:`~mreyextract.io.RunPaths` per matching BOLD file.
 
+    Raises
+    ------
+    ValueError
+        If two different inputs map to the same eye-output path.
     """
 
     logger.info("Reading BIDS Layout")
@@ -236,6 +292,57 @@ def bids_paths(  # pylint: disable=too-many-locals
     return run_paths
 
 
+@lru_cache(maxsize=1)
+def _cached_masks():
+    """
+    Load masks/template once per process.
+
+    Wrapped in ``lru_cache`` so that, under a loky worker pool, each worker
+    reads the (small) mask NIfTIs from disk exactly once and reuses them across
+    every run it processes. Cleared at the start of each top-level extraction
+    so a fresh call always reloads.
+    """
+    return preprocess.get_masks()
+
+
+def _process_run(run_path: RunPaths, as_pickle: bool) -> None:
+    """
+    Extract eye voxels for a single run.
+
+    Self-contained so it can execute in a loky worker process: it reconfigures
+    logging, lazily loads the (worker-local, cached) masks, ensures the output
+    directory exists, and runs the extraction. The runs are independent — each
+    reads its own input and writes to a distinct output path — so this is safe
+    to call concurrently.
+
+    Parameters
+    ----------
+    run_path : RunPaths
+        Input and output paths for the single run to process.
+    as_pickle : bool
+        If ``True`` the eye voxels are written as a pickled NumPy array;
+        otherwise they are written as NIfTI.
+    """
+    _ensure_worker_logging()
+    eyemask_small, eyemask_big, dme_template, _, x_edges, y_edges, z_edges = (
+        _cached_masks()
+    )
+
+    logger.info("Processing file %s", run_path.in_path)
+    run_path.out_eye_path.parent.mkdir(parents=True, exist_ok=True)
+
+    preprocess.extract_mask(
+        run_path,
+        dme_template,
+        eyemask_big,
+        eyemask_small,
+        x_edges,
+        y_edges,
+        z_edges,
+        as_pickle=as_pickle,
+    )
+
+
 def extract_eyeball_voxels(  # pylint: disable=too-many-locals
     root: str | Path,
     glob_pattern: str,
@@ -244,23 +351,45 @@ def extract_eyeball_voxels(  # pylint: disable=too-many-locals
     filters: dict[str, str] | None = None,
     force: bool = False,
     as_pickle: bool = False,
+    n_jobs: int = 1,
+    threads_per_job: int | None = None,
 ) -> None:
     """
     Extract eye voxels from cleaned fmri images.
 
     Parameters
     ----------
-    root: str
-    glob_pattern: str
-    bids_compatible: bool
-    derivatives_dir: str | None
-    filters: dict[str, str] | None
-    force: bool
-    as_pickle: bool
+    root : str | Path
+        Directory to search for BOLD files.
+    glob_pattern : str
+        Glob used to find BOLD files when ``bids_compatible`` is ``False``.
+        Ignored in BIDS mode.
+    bids_compatible : bool, optional
+        If ``True`` (default) ``root`` is treated as a BIDS dataset and queried
+        with PyBIDS; otherwise ``glob_pattern`` is used.
+    derivatives_dir : str | None, optional
+        In BIDS mode, the relative derivatives pipeline to extract from
+        (e.g. ``"fmriprep"``). Default ``None`` (raw dataset).
+    filters : dict[str, str] | None, optional
+        BIDS entity filters applied in BIDS mode (e.g. ``{"task": "rest"}``).
+        Default ``None``.
+    force : bool, optional
+        If ``True`` reprocess runs whose output already exists. Default
+        ``False``.
+    as_pickle : bool, optional
+        If ``True`` save eye voxels as pickled NumPy arrays instead of NIfTI.
+        Default ``False``.
+    n_jobs : int, optional
+        Number of runs to process in parallel using a loky (process) pool.
+        ``1`` (default) runs serially; ``-1`` uses all available cores.
+    threads_per_job : int | None, optional
+        ITK/ANTs threads each job may use. When ``None`` it is chosen so that
+        ``n_jobs * threads_per_job`` is roughly the CPU count, avoiding
+        oversubscription (ANTs registration is itself multithreaded).
 
     Returns
     -------
-
+    None
     """
 
     output_dir = mreyextract_root(root).resolve()
@@ -291,25 +420,35 @@ def extract_eyeball_voxels(  # pylint: disable=too-many-locals
         )
         return
 
-    # Preload masks and template
-    eyemask_small, eyemask_big, dme_template, _, x_edges, y_edges, z_edges = (
-        preprocess.get_masks()
+    # Masks are loaded lazily inside each worker (see _cached_masks); drop any
+    # cache from a previous call so a fresh extraction reloads.
+    _cached_masks.cache_clear()
+
+    # Split cores between across-run parallelism and each run's own ANTs/ITK
+    # threading so we don't oversubscribe the machine. loky's cpu_count honours
+    # CPU affinity and cgroup quotas, so this respects a SLURM/container
+    # allocation instead of seeing the whole node like os.cpu_count() would.
+    n_cpus = loky_cpu_count() or 1
+    effective_jobs = n_cpus if n_jobs in (-1, 0) else n_jobs
+    if threads_per_job is None:
+        threads_per_job = max(1, n_cpus // max(1, effective_jobs))
+    # Inherited by loky workers spawned below; also caps the serial path.
+    os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = str(threads_per_job)
+
+    logger.info(
+        "Processing %d run(s) with n_jobs=%d and %d ITK thread(s) per job",
+        len(run_paths),
+        n_jobs,
+        threads_per_job,
     )
 
-    for run_path in run_paths:
-        logger.info("Processing file %s", run_path.in_path)
-        run_path.out_eye_path.parent.mkdir(parents=True, exist_ok=True)
-
-        # It takes long to build up the layout so I need to cache it as a sqllite index
-        preprocess.extract_mask(
-            run_path,
-            dme_template,
-            eyemask_big,
-            eyemask_small,
-            x_edges,
-            y_edges,
-            z_edges,
-            as_pickle=as_pickle,
+    if n_jobs == 1:
+        for run_path in run_paths:
+            _process_run(run_path, as_pickle=as_pickle)
+    else:
+        Parallel(n_jobs=n_jobs, backend="loky")(
+            delayed(_process_run)(run_path, as_pickle=as_pickle)
+            for run_path in run_paths
         )
 
 
@@ -318,21 +457,110 @@ def extract_eyeball_voxels(  # pylint: disable=too-many-locals
 # -----------------------
 
 
-def cli_main() -> None:
+def _load_config(path: Path) -> dict:
     """
-    Main entry point
+    Load the ``extract`` section of a YAML run-config file.
+
+    Parameters
+    ----------
+    path : Path
+        Path to a YAML file with a top-level ``extract:`` mapping whose keys
+        mirror the CLI options (using underscores, e.g. ``n_jobs``). A nested
+        ``filters:`` mapping supplies BIDS entity filters.
+
     Returns
     -------
+    dict
+        The ``extract`` mapping, or an empty dict if the section is absent.
+    """
+    import yaml  # pylint: disable=import-outside-toplevel
 
+    data = yaml.safe_load(path.read_text()) or {}
+    return data.get("extract", {}) or {}
+
+
+def _convert_filter_value(value):
+    """
+    Apply PyBIDS sentinel conversion to a config-supplied filter value.
+
+    Parameters
+    ----------
+    value : object
+        A scalar or list from the config's ``filters`` mapping. ``"*"`` becomes
+        ``Query.ANY`` and ``"none"``/``"null"`` become ``Query.NONE``; lists are
+        converted element-wise.
+
+    Returns
+    -------
+    object
+        The converted value.
+    """
+
+    def _conv(item):
+        if item == "*":
+            return Query.ANY
+        if isinstance(item, str) and item.lower() in ("none", "null"):
+            return Query.NONE
+        return item
+
+    if isinstance(value, list):
+        return [_conv(item) for item in value]
+    return _conv(value)
+
+
+def cli_main() -> None:
+    """
+    Command-line entry point for the ``mreyextract`` console script.
+
+    Parses arguments, optionally seeding defaults from a ``--config`` YAML file
+    (explicit CLI flags take precedence), assembles BIDS entity filters
+    (optionally merged from a ``--bids-filter-file``), configures logging and
+    dispatches to :func:`extract_eyeball_voxels`.
+
+    Returns
+    -------
+    None
     """
 
     def _pybids_none_any(dct):
+        """
+        Map filter-file sentinels to PyBIDS query constants.
+
+        Parameters
+        ----------
+        dct : dict
+            Entity filters loaded from JSON. ``None`` values become
+            ``Query.NONE`` and ``"*"`` values become ``Query.ANY``.
+
+        Returns
+        -------
+        dict
+            The filters with sentinels replaced by PyBIDS query constants.
+        """
         return {
             k: Query.NONE if v is None else (Query.ANY if v == "*" else v)
             for k, v in dct.items()
         }
 
     def entity_value(typ, prefix=None):
+        """
+        Build an argparse ``type`` converter for a BIDS entity value.
+
+        Parameters
+        ----------
+        typ : type
+            Callable applied to the final string (e.g. ``str`` or ``int``).
+        prefix : str | None, optional
+            Entity prefix (e.g. ``"sub"``) stripped from values like
+            ``"sub-01"`` before conversion. Default ``None``.
+
+        Returns
+        -------
+        Callable[[str], object]
+            A converter mapping ``"*"`` to ``Query.ANY``, ``"none"``/``"null"``
+            to ``Query.NONE`` and everything else through ``typ``.
+        """
+
         def _conv(s: str):
             if s == "*":
                 return Query.ANY
@@ -345,6 +573,16 @@ def cli_main() -> None:
         return _conv
 
     def run_default(args, filters):
+        """
+        Dispatch parsed arguments to :func:`extract_eyeball_voxels`.
+
+        Parameters
+        ----------
+        args : argparse.Namespace
+            Parsed command-line arguments.
+        filters : dict
+            Assembled BIDS entity filters.
+        """
         return extract_eyeball_voxels(
             root=args.root,
             derivatives_dir=args.derivatives_dir,
@@ -353,16 +591,34 @@ def cli_main() -> None:
             force=args.force,
             as_pickle=args.as_pickle,
             glob_pattern=args.glob_pattern,
+            n_jobs=args.n_jobs,
+            threads_per_job=args.threads_per_job,
         )
+
+    # First pass: discover a --config file so its values can seed defaults.
+    config_parser = argparse.ArgumentParser(add_help=False)
+    config_parser.add_argument("--config", type=Path)
+    config_args, _ = config_parser.parse_known_args()
+
+    config = _load_config(config_args.config) if config_args.config else {}
+    config_filters = config.pop("filters", {}) or {}
 
     parser = argparse.ArgumentParser(
         prog="mreyextract", description="Run eye voxel extraction."
     )
 
     parser.add_argument(
+        "--config",
+        type=Path,
+        required=False,
+        help="YAML config file whose 'extract' section seeds the options below. "
+        "Explicit CLI flags override values from the file.",
+    )
+
+    parser.add_argument(
         "--root",
         type=str,
-        required=True,
+        required="root" not in config,
         help="[BIDS] Root directory to look for BOLD files in.",
     )
 
@@ -396,6 +652,24 @@ def cli_main() -> None:
     )
 
     parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=1,
+        required=False,
+        help="Number of runs to process in parallel (loky process pool). "
+        "1 (default) runs serially; -1 uses all available cores.",
+    )
+
+    parser.add_argument(
+        "--threads-per-job",
+        type=int,
+        default=None,
+        required=False,
+        help="ITK/ANTs threads per parallel job. Defaults to "
+        "cores // n_jobs to avoid oversubscribing the machine.",
+    )
+
+    parser.add_argument(
         "--log-level",
         default="INFO",
         required=False,
@@ -426,8 +700,25 @@ def cli_main() -> None:
         help="JSON of BIDS entity filters",
     )
 
+    # Seed argparse defaults from the config so CLI flags still override them.
+    if config:
+        valid_dests = {action.dest for action in parser._actions}
+        unknown = set(config) - valid_dests
+        if unknown:
+            parser.error(f"Unknown key(s) under 'extract' in config: {sorted(unknown)}")
+        parser.set_defaults(**{key: config[key] for key in config})
+
     args = parser.parse_args()
-    filters = {k: v for k, v in vars(args).items() if k in ENTITIES and v is not None}
+
+    # Paths coming from the config arrive as plain strings.
+    if isinstance(args.bids_filter_file, str):
+        args.bids_filter_file = Path(args.bids_filter_file)
+
+    # Filters: config first, then CLI entity flags override, then filter file.
+    filters = {k: _convert_filter_value(v) for k, v in config_filters.items()}
+    filters.update(
+        {k: v for k, v in vars(args).items() if k in ENTITIES and v is not None}
+    )
 
     if args.bids_filter_file:
         filters.update(

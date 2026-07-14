@@ -12,30 +12,18 @@ authors = [
   { name = "Zach", email = "zachnudels@gmail.com" }
 ]
 dependencies = [
-#  "tensorflow==2.15.0",
     "numpy<2.0.0",
     "nibabel>=5.3.2",
     "antspyx>=0.6.1",
     "scipy>=1.15.1",
     "plotly>=6.5.0",
     "pybids>=0.22.0",
-#  "nilearn>=0.12.1,<0.13.0",
-#  "jupyter>=1.1.1,<2.0.0",
-#  "fastparquet>=2024.11.0",
-#  "pydantic>=2.12",
-#  "nipype>=1.10",
-#  "statsmodels>=0.14",
+    "joblib>=1.3",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
 mreyextract = "mreyextract.extract:cli_main"
-#mreyemove-signal = "mreyemove.preprocessing.eye_move:cli_main"
-#mreyemove-glm = "mreyemove.analysis.glm.cli:cli_main"
-#mreyemove-fc-extract = "mreyemove.analysis.fc.extract_fc_matrices:cli_main"
-#mreyemove-derive = "mreyemove.preprocessing.cli:cli_main"
-
-#[project.entry-points."mreyemove.datasets"]
-#default = "mreyemove.data.mrio:MRIO"
 
 
 [project.optional-dependencies]

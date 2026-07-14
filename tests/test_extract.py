@@ -1,11 +1,26 @@
 """Tests for :mod:`mreyextract.extract`."""
 
+import os
 from pathlib import Path
 
 import pytest
 
 from mreyextract import extract
 from mreyextract.io import RunPaths
+
+
+class _FakeParallel:
+    """Stand-in for ``joblib.Parallel`` that runs delayed tasks in-process.
+
+    Keeps ``preprocess`` mocks (which only apply to the current process) in
+    effect, so the parallel dispatch path is exercised without spawning workers.
+    """
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+    def __call__(self, tasks):
+        return [func(*args, **kw) for func, args, kw in tasks]
 
 
 # ---------------------------------------------------------------------------
@@ -262,9 +277,7 @@ def fake_masks(monkeypatch):
 
 
 class TestExtractEyeballVoxels:
-    def test_bids_path_processes_each_run(
-        self, bids_root: Path, fake_masks
-    ):
+    def test_bids_path_processes_each_run(self, bids_root: Path, fake_masks):
         extract.extract_eyeball_voxels(
             root=bids_root,
             glob_pattern="unused",
@@ -278,9 +291,7 @@ class TestExtractEyeballVoxels:
         assert run_path.out_eye_path.parent.is_dir()
         assert kwargs.get("as_pickle") is False
 
-    def test_non_bids_path_processes_each_run(
-        self, non_bids_root: Path, fake_masks
-    ):
+    def test_non_bids_path_processes_each_run(self, non_bids_root: Path, fake_masks):
         extract.extract_eyeball_voxels(
             root=non_bids_root,
             glob_pattern="sub-*/**/func/*_bold.nii*",
@@ -307,6 +318,87 @@ class TestExtractEyeballVoxels:
             bids_compatible=False,
         )
         assert called["get_masks"] is False
+
+    def test_threads_per_job_sets_env(self, bids_root: Path, fake_masks, monkeypatch):
+        monkeypatch.delenv("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", raising=False)
+        extract.extract_eyeball_voxels(
+            root=bids_root,
+            glob_pattern="unused",
+            bids_compatible=True,
+            force=True,
+            threads_per_job=3,
+        )
+        assert os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] == "3"
+
+    def test_auto_threads_split_uses_allocation(
+        self, bids_root: Path, fake_masks, monkeypatch
+    ):
+        # Pretend the allocation (cgroup/affinity) exposes 8 CPUs.
+        monkeypatch.setattr(extract, "loky_cpu_count", lambda: 8)
+        monkeypatch.setattr(extract, "Parallel", _FakeParallel)
+        monkeypatch.delenv("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", raising=False)
+
+        extract.extract_eyeball_voxels(
+            root=bids_root,
+            glob_pattern="unused",
+            bids_compatible=True,
+            force=True,
+            n_jobs=2,  # 8 // 2 -> 4 threads per job
+        )
+        assert os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] == "4"
+
+    def test_auto_threads_all_cores_when_serial(
+        self, bids_root: Path, fake_masks, monkeypatch
+    ):
+        monkeypatch.setattr(extract, "loky_cpu_count", lambda: 8)
+        monkeypatch.delenv("ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS", raising=False)
+
+        extract.extract_eyeball_voxels(
+            root=bids_root,
+            glob_pattern="unused",
+            bids_compatible=True,
+            force=True,
+            n_jobs=1,  # serial -> a single job may use all allocated cores
+        )
+        assert os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] == "8"
+
+    def test_parallel_dispatches_all_runs(
+        self, non_bids_root: Path, fake_masks, monkeypatch
+    ):
+        monkeypatch.setattr(extract, "Parallel", _FakeParallel)
+        extract.extract_eyeball_voxels(
+            root=non_bids_root,
+            glob_pattern="sub-*/**/func/*_bold.nii*",
+            bids_compatible=False,
+            force=True,
+            n_jobs=2,
+        )
+        # Both independent runs were dispatched through the parallel path.
+        assert len(fake_masks) == 2
+
+
+class TestProcessRun:
+    def test_creates_output_dir_and_extracts(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(extract, "_cached_masks", lambda: tuple(range(7)))
+
+        calls = []
+        monkeypatch.setattr(
+            extract.preprocess,
+            "extract_mask",
+            lambda run_path, *a, **kw: calls.append((run_path, kw)),
+        )
+
+        rp = RunPaths(
+            in_path=tmp_path / "in.nii.gz",
+            out_eye_path=tmp_path / "sub-01" / "func" / "out_desc-eye.nii.gz",
+            out_report_path=tmp_path / "sub-01" / "func" / "report.html",
+        )
+
+        extract._process_run(rp, as_pickle=True)
+
+        assert rp.out_eye_path.parent.is_dir()
+        assert calls[0][0] is rp
+        assert calls[0][1]["as_pickle"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +431,31 @@ class TestCliMain:
         assert captured["force"] is True
         assert captured["as_pickle"] is True
         assert captured["filters"]["task"] == ["rest"]
+        # Parallelism defaults to serial.
+        assert captured["n_jobs"] == 1
+        assert captured["threads_per_job"] is None
+
+    def test_parallel_flags(self, monkeypatch, tmp_path: Path):
+        captured = {}
+        monkeypatch.setattr(
+            extract, "extract_eyeball_voxels", lambda **kw: captured.update(kw)
+        )
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "mreyextract",
+                "--root",
+                str(tmp_path),
+                "--n-jobs",
+                "4",
+                "--threads-per-job",
+                "2",
+            ],
+        )
+
+        extract.cli_main()
+        assert captured["n_jobs"] == 4
+        assert captured["threads_per_job"] == 2
 
     def test_bids_filter_file_merged(self, monkeypatch, tmp_path: Path):
         captured = {}
@@ -397,5 +514,115 @@ class TestCliMain:
 
     def test_root_is_required(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["mreyextract"])
+        with pytest.raises(SystemExit):
+            extract.cli_main()
+
+
+# ---------------------------------------------------------------------------
+# config-file support
+# ---------------------------------------------------------------------------
+class TestConfig:
+    def test_load_config_reads_extract_section(self, tmp_path: Path):
+        cfg = tmp_path / "run.yaml"
+        cfg.write_text(
+            "extract:\n"
+            "  root: /data/bids\n"
+            "  n_jobs: 4\n"
+            "  filters:\n"
+            "    task: [rest]\n"
+            "slurm:\n"
+            "  partition: defq\n"
+        )
+        loaded = extract._load_config(cfg)
+        assert loaded["root"] == "/data/bids"
+        assert loaded["n_jobs"] == 4
+        assert loaded["filters"] == {"task": ["rest"]}
+        assert "partition" not in loaded  # slurm section is ignored
+
+    def test_load_config_missing_extract_section(self, tmp_path: Path):
+        cfg = tmp_path / "run.yaml"
+        cfg.write_text("slurm:\n  partition: defq\n")
+        assert extract._load_config(cfg) == {}
+
+    def test_convert_filter_value_sentinels(self):
+        from bids.layout import Query
+
+        assert extract._convert_filter_value("*") is Query.ANY
+        assert extract._convert_filter_value("none") is Query.NONE
+        assert extract._convert_filter_value("null") is Query.NONE
+        assert extract._convert_filter_value(["rest", "*"]) == ["rest", Query.ANY]
+        assert extract._convert_filter_value("rest") == "rest"
+
+    def _write_config(self, tmp_path: Path, body: str) -> Path:
+        cfg = tmp_path / "run.yaml"
+        cfg.write_text(body)
+        return cfg
+
+    def test_config_seeds_arguments(self, monkeypatch, tmp_path: Path):
+        cfg = self._write_config(
+            tmp_path,
+            "extract:\n"
+            f"  root: {tmp_path}\n"
+            "  derivatives_dir: fmriprep\n"
+            "  n_jobs: 4\n"
+            "  threads_per_job: 2\n"
+            "  filters:\n"
+            "    task: [rest]\n",
+        )
+        captured = {}
+        monkeypatch.setattr(
+            extract, "extract_eyeball_voxels", lambda **kw: captured.update(kw)
+        )
+        monkeypatch.setattr("sys.argv", ["mreyextract", "--config", str(cfg)])
+
+        extract.cli_main()
+
+        assert captured["root"] == str(tmp_path)
+        assert captured["derivatives_dir"] == "fmriprep"
+        assert captured["n_jobs"] == 4
+        assert captured["threads_per_job"] == 2
+        assert captured["filters"]["task"] == ["rest"]
+
+    def test_cli_overrides_config(self, monkeypatch, tmp_path: Path):
+        cfg = self._write_config(
+            tmp_path,
+            "extract:\n"
+            f"  root: {tmp_path}\n"
+            "  n_jobs: 4\n"
+            "  filters:\n"
+            "    task: [rest]\n",
+        )
+        captured = {}
+        monkeypatch.setattr(
+            extract, "extract_eyeball_voxels", lambda **kw: captured.update(kw)
+        )
+        monkeypatch.setattr(
+            "sys.argv",
+            ["mreyextract", "--config", str(cfg), "--n-jobs", "1", "--task", "rest2"],
+        )
+
+        extract.cli_main()
+
+        # CLI value wins over the config value.
+        assert captured["n_jobs"] == 1
+        assert captured["filters"]["task"] == ["rest2"]
+
+    def test_root_from_config_not_required_on_cli(self, monkeypatch, tmp_path: Path):
+        cfg = self._write_config(tmp_path, f"extract:\n  root: {tmp_path}\n")
+        captured = {}
+        monkeypatch.setattr(
+            extract, "extract_eyeball_voxels", lambda **kw: captured.update(kw)
+        )
+        monkeypatch.setattr("sys.argv", ["mreyextract", "--config", str(cfg)])
+
+        # Should not raise even though --root is absent from the command line.
+        extract.cli_main()
+        assert captured["root"] == str(tmp_path)
+
+    def test_unknown_config_key_errors(self, monkeypatch, tmp_path: Path):
+        cfg = self._write_config(
+            tmp_path, f"extract:\n  root: {tmp_path}\n  bogus_key: 1\n"
+        )
+        monkeypatch.setattr("sys.argv", ["mreyextract", "--config", str(cfg)])
         with pytest.raises(SystemExit):
             extract.cli_main()

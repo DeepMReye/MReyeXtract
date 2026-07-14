@@ -10,7 +10,16 @@ from pathlib import Path
 @dataclass
 class RunPaths:
     """
-    Input and output paths for eyeball extraction
+    Input and output paths for eyeball extraction.
+
+    Parameters
+    ----------
+    in_path : Path
+        Path to the input BOLD image to process.
+    out_eye_path : Path
+        Path the extracted eye voxels are written to (NIfTI or pickle).
+    out_report_path : Path
+        Path the HTML quality-control report is written to.
     """
 
     in_path: Path
@@ -19,6 +28,15 @@ class RunPaths:
 
 
 def _write_bids_description(path: Path):
+    """
+    Write a minimal ``dataset_description.json`` into a derivatives directory.
+
+    Parameters
+    ----------
+    path : Path
+        Derivatives directory to write into. If a description already exists it
+        is left untouched.
+    """
     try:
         from ._version import __version__  # pylint: disable=import-outside-toplevel
     except ImportError:
@@ -38,14 +56,23 @@ def _write_bids_description(path: Path):
 
 def mreyextract_root(root: Path | str) -> Path:
     """
-    Construct the derivatives root for MReyeXtract
+    Construct (and create) the derivatives root for MReyeXtract.
+
     Parameters
     ----------
-    root
+    root : Path | str
+        Existing dataset root. The derivatives tree is created beneath it.
 
     Returns
     -------
+    Path
+        The ``<root>/derivatives/mreyextract`` directory, created if needed and
+        seeded with a ``dataset_description.json``.
 
+    Raises
+    ------
+    FileNotFoundError
+        If ``root`` does not exist.
     """
     root = Path(root)
     if not root.exists():

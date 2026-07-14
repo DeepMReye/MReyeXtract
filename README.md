@@ -95,8 +95,51 @@ mreyextract --root /path/to/data --no-bids-compatible \
 | `--glob-pattern` | Glob for non-BIDS mode. Default: `sub-*/**/func/*_bold.nii*`. |
 | `--force` | Overwrite existing outputs instead of skipping them. |
 | `--as-pickle` | Save the masked eye voxels as a pickled array instead of NIfTI. |
+| `--n-jobs` | Number of runs to process in parallel. `1` (default) is serial; `-1` uses all cores. |
+| `--threads-per-job` | ITK/ANTs threads per parallel job. Default: `cores // n_jobs`. |
 | `--log-level` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Default: `INFO`. |
 | `--bids-filter-file` | Path to a JSON file of BIDS entity filters. |
+| `--config` | Path to a YAML config file that seeds the options above. |
+
+### Config file
+
+Rather than passing many flags, the run can be described in a YAML file and
+loaded with `--config`. Keys under `extract` mirror the CLI options (with
+underscores); explicit flags on the command line override the file:
+
+```yaml
+# run.yaml
+extract:
+  root: /abs/path/to/bids_dataset
+  derivatives_dir: fmriprep
+  n_jobs: 4
+  threads_per_job: 2
+  filters:
+    task: [rest]        # "*" -> any, "none"/"null" -> absent
+```
+
+```bash
+mreyextract --config run.yaml            # everything from the file
+mreyextract --config run.yaml --force    # override a single option
+```
+
+### Parallel processing
+
+Runs are independent, so they can be processed in parallel across a
+[loky](https://joblib.readthedocs.io/en/stable/parallel.html) process pool:
+
+```bash
+mreyextract --root /path/to/bids_dataset --n-jobs 8
+```
+
+Registration (ANTsPy/ITK) is itself multithreaded, so the tool splits the
+available cores between across-run parallelism (`--n-jobs`) and each run's own
+threads (`--threads-per-job`) to avoid oversubscription. By default
+`threads-per-job` is set to `cores // n_jobs`, where `cores` respects the CPU
+allocation (SLURM/cgroup affinity), not just the physical node — so the default
+is safe when running interactively inside an allocation. Tune both together on a
+shared server, and keep an eye on memory — each concurrent run holds a full 4D
+BOLD volume in RAM.
 
 ### Python API
 
@@ -149,7 +192,27 @@ antspyx    (>=0.6.1)
 scipy      (>=1.15.1)
 plotly     (>=6.5.0)
 pybids     (>=0.22.0)
+joblib     (>=1.3)
+pyyaml     (>=6.0)
 ```
+
+## Running on a cluster (SLURM)
+
+The [`slurm/`](slurm) directory contains a ready-to-adapt job-array template
+(`submit.sbatch`) and an example `config.yaml`. The pattern is **one array task
+per subject**: SLURM provides the across-subject parallelism, and each task lets
+ANTs use all of its allocated cores.
+
+```bash
+mkdir -p logs
+sbatch slurm/submit.sbatch slurm/config.yaml
+```
+
+The template reads the subject list from the config's `slurm.subjects`, injects
+the right subject per array index, and caps ITK/OpenMP threads to
+`--cpus-per-task`. Edit the `#SBATCH` resource directives (and the `--array`
+range to match the number of subjects), the `module load` line (must be a
+**Python 3.11** build), and the virtual-environment path before submitting.
 
 ## Tests
 
