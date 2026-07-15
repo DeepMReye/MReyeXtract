@@ -33,7 +33,7 @@ ENTITIES = {
     "echo": (int, None),
 }
 
-DESC_ADD = "masked_eye"
+DESC_ADD = "eye"
 
 
 @dataclass

@@ -97,7 +97,7 @@ class TestNonBidsPaths:
             output_dir=out_dir,
             as_pickle=True,
         )
-        assert run_paths[0].out_eye_path.name.endswith(f"_{DESC_ADD}.p")
+        assert run_paths[0].out_eye_path.name.endswith(f"_{DESC_ADD}.pkl")
 
     def test_skips_existing_without_force(self, non_bids_root: Path, tmp_path: Path):
         out_dir = (tmp_path / "out").resolve()
@@ -221,7 +221,7 @@ class TestBidsPaths:
             root=bids_root, derivatives_dir=None, output_dir=out_dir, as_pickle=True
         )
         assert run_paths[0].out_eye_path.name.endswith(
-            f"_desc-{DESC_ADD}_timeseries.p"
+            f"_desc-{DESC_ADD}_bold.pkl"
         )
 
     def test_filters_select_files(self, bids_root: Path, tmp_path: Path):
@@ -341,7 +341,7 @@ class TestBidsPathsDerivatives:
             rp for rp in run_paths if "desc-preproc" in rp.out_eye_path.name
         )
         assert preproc.out_eye_path.name.endswith(
-            f"_desc-preproc_{DESC_ADD}_timeseries.p"
+            f"_desc-preproc_{DESC_ADD}_bold.pkl"
         )
 
     def test_outputs_mirror_layout(self, fmriprep_root: Path, tmp_path: Path):

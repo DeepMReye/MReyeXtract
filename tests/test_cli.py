@@ -86,6 +86,34 @@ class TestCliMain:
         cli.cli_main()
         assert captured["filters"]["session"] == "01"
 
+    def test_cli_flag_overrides_bids_filter_file(self, monkeypatch, tmp_path: Path):
+        captured = {}
+        monkeypatch.setattr(
+            cli, "extract_eyeball_voxels", lambda **kw: captured.update(kw)
+        )
+
+        filter_file = tmp_path / "filters.json"
+        # Filter file sets task and session; the CLI overrides only task.
+        filter_file.write_text('{"task": "rest", "session": "01"}')
+
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "mreyextract",
+                "--root",
+                str(tmp_path),
+                "--bids-filter-file",
+                str(filter_file),
+                "--task",
+                "rest2",
+            ],
+        )
+
+        cli.cli_main()
+        # CLI wins for task; the filter file still supplies session.
+        assert captured["filters"]["task"] == ["rest2"]
+        assert captured["filters"]["session"] == "01"
+
     def test_entity_value_conversions(self, monkeypatch, tmp_path: Path):
         from bids.layout import Query
 

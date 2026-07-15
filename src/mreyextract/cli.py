@@ -274,11 +274,9 @@ def cli_main() -> None:
     if isinstance(args.bids_filter_file, str):
         args.bids_filter_file = Path(args.bids_filter_file)
 
-    # Filters: config first, then CLI entity flags override, then filter file.
+    # Filters, lowest to highest precedence: YAML config, then the BIDS filter
+    # file, then explicit CLI entity flags (the command line always wins).
     filters = {k: _convert_filter_value(v) for k, v in config_filters.items()}
-    filters.update(
-        {k: v for k, v in vars(args).items() if k in ENTITIES and v is not None}
-    )
 
     if args.bids_filter_file:
         filters.update(
@@ -287,6 +285,10 @@ def cli_main() -> None:
                 object_hook=_pybids_none_any,
             )
         )
+
+    filters.update(
+        {k: v for k, v in vars(args).items() if k in ENTITIES and v is not None}
+    )
 
     enable_logging(level=args.log_level.upper())
 

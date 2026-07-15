@@ -83,7 +83,7 @@ def non_bids_paths(
     ValueError
         If two different inputs map to the same eye-output path.
     """
-    ext = ".p" if as_pickle else ".nii.gz"
+    ext = ".pkl" if as_pickle else ".nii.gz"
 
     run_paths = []
     seen: dict[Path, Path] = {}
@@ -231,10 +231,8 @@ def bids_paths(  # pylint: disable=too-many-locals
     for file in files:
         ents = file.get_entities()
         if as_pickle:
-            suffix = "timeseries"
-            ext = ".p"
+            ext = ".pkl"
         else:
-            suffix = "bold"
             ext = ".nii.gz"
 
         # Append (not overwrite) the eye marker to the input's desc so eye
@@ -243,7 +241,7 @@ def bids_paths(  # pylint: disable=too-many-locals
         orig_desc = ents.get("desc")
         eye_desc = f"{orig_desc}_{DESC_ADD}" if orig_desc else DESC_ADD
 
-        ents.update(desc=eye_desc, suffix=suffix, extension=ext)
+        ents.update(desc=eye_desc, extension=ext)
         out_eye = output_dir / layout.build_path(
             ents, path_patterns=[PATTERN], validate=False, absolute_paths=False
         )

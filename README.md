@@ -33,7 +33,7 @@ pip install -e .
 For development (tests, linting, type checking):
 
 ```bash
-pip install -e ".[dev]" pytest pytest-cov pytest-mock
+pip install -e ".[dev]"
 ```
 
 #### Anaconda / Miniconda installation
@@ -71,10 +71,13 @@ the entity is absent:
 
 ```bash
 mreyextract --root /path/to/bids_dataset \
-    --subject 01 02 --task rest --run '*'
+            --subject 01 02 --task rest --run '*'
 ```
 
-Filters can also be supplied as a JSON file via `--bids-filter-file`.
+Filters can also be supplied as a JSON file via `--bids-filter-file` (the
+BIDS-App convention). Precedence, lowest to highest, is: YAML config →
+`--bids-filter-file` → explicit CLI entity flags, so the command line always
+wins.
 
 ### Non-BIDS directories
 
@@ -82,7 +85,7 @@ Point `--no-bids-compatible` at any tree and provide a glob pattern:
 
 ```bash
 mreyextract --root /path/to/data --no-bids-compatible \
-    --glob-pattern 'sub-*/**/func/*_bold.nii*'
+            --glob-pattern 'sub-*/**/func/*_bold.nii*'
 ```
 
 ### Options
