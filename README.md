@@ -75,8 +75,8 @@ mreyextract --root /path/to/bids_dataset \
 ```
 
 Filters can also be supplied as a JSON file via `--bids-filter-file` (the
-BIDS-App convention). Precedence, lowest to highest, is: YAML config →
-`--bids-filter-file` → explicit CLI entity flags, so the command line always
+BIDS-App convention). Precedence, lowest to highest, is: YAML config (see later) →
+JSON BIDS filter file → explicit CLI entity flags, so the command line always
 wins.
 
 ### Non-BIDS directories
