@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [project.scripts]
-mreyextract = "mreyextract.extract:cli_main"
+mreyextract = "mreyextract.cli:cli_main"
 
 
 [project.optional-dependencies]

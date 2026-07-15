@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from mreyextract import extract
-from mreyextract.io import RunPaths
+from mreyextract.io import RunPaths, DESC_ADD
 
 
 class _FakeParallel:
@@ -82,9 +82,11 @@ class TestNonBidsPaths:
         )
         rp = run_paths[0]
         rel = rp.out_eye_path.relative_to(out_dir)
-        assert rel == Path("sub-01/func/sub-01_task-rest_run-1_bold_desc-eye.nii.gz")
+        assert rel == Path(
+            f"sub-01/func/sub-01_task-rest_run-1_bold_{DESC_ADD}.nii.gz"
+        )
         assert rp.out_report_path.name == (
-            "sub-01_task-rest_run-1_bold_desc-eye_report.html"
+            f"sub-01_task-rest_run-1_bold_{DESC_ADD}_report.html"
         )
 
     def test_pickle_extension(self, non_bids_root: Path, tmp_path: Path):
@@ -95,7 +97,7 @@ class TestNonBidsPaths:
             output_dir=out_dir,
             as_pickle=True,
         )
-        assert run_paths[0].out_eye_path.name.endswith("_desc-eye.p")
+        assert run_paths[0].out_eye_path.name.endswith(f"_{DESC_ADD}.p")
 
     def test_skips_existing_without_force(self, non_bids_root: Path, tmp_path: Path):
         out_dir = (tmp_path / "out").resolve()
@@ -207,10 +209,10 @@ class TestBidsPaths:
         rp = run_paths[0]
         assert rp.in_path.name == "sub-01_task-rest_run-1_bold.nii.gz"
         assert rp.out_eye_path.relative_to(out_dir) == Path(
-            "sub-01/func/sub-01_task-rest_run-1_desc-eye_bold.nii.gz"
+            f"sub-01/func/sub-01_task-rest_run-1_desc-{DESC_ADD}_bold.nii.gz"
         )
         assert rp.out_report_path.name == (
-            "sub-01_task-rest_run-1_desc-eye_report.html"
+            f"sub-01_task-rest_run-1_desc-{DESC_ADD}_report.html"
         )
 
     def test_pickle_suffix_and_extension(self, bids_root: Path, tmp_path: Path):
@@ -218,7 +220,9 @@ class TestBidsPaths:
         run_paths = extract.bids_paths(
             root=bids_root, derivatives_dir=None, output_dir=out_dir, as_pickle=True
         )
-        assert run_paths[0].out_eye_path.name.endswith("_desc-eye_timeseries.p")
+        assert run_paths[0].out_eye_path.name.endswith(
+            f"_desc-{DESC_ADD}_timeseries.p"
+        )
 
     def test_filters_select_files(self, bids_root: Path, tmp_path: Path):
         out_dir = (tmp_path / "out").resolve()
@@ -256,6 +260,104 @@ class TestBidsPaths:
             root=bids_root, derivatives_dir=None, output_dir=out_dir, force=True
         )
         assert len(forced) == 1
+
+    def test_multi_echo_outputs_are_distinct(self, tmp_path: Path):
+        # echo is not part of the old pattern; without it in PATTERN both echoes
+        # would collide onto one output.
+        root = (tmp_path / "bids").resolve()
+        func = root / "sub-01" / "func"
+        func.mkdir(parents=True)
+        (root / "dataset_description.json").write_text(
+            '{"Name": "t", "BIDSVersion": "1.8.0"}'
+        )
+        (func / "sub-01_task-rest_run-1_echo-1_bold.nii.gz").write_bytes(b"")
+        (func / "sub-01_task-rest_run-1_echo-2_bold.nii.gz").write_bytes(b"")
+
+        out_dir = (tmp_path / "out").resolve()
+        run_paths = extract.bids_paths(
+            root=root, derivatives_dir=None, output_dir=out_dir
+        )
+        names = sorted(rp.out_eye_path.name for rp in run_paths)
+        assert names == [
+            f"sub-01_task-rest_run-1_echo-1_desc-{DESC_ADD}_bold.nii.gz",
+            f"sub-01_task-rest_run-1_echo-2_desc-{DESC_ADD}_bold.nii.gz",
+        ]
+
+
+# ---------------------------------------------------------------------------
+# bids_paths — derivatives (fmriprep) branch
+# ---------------------------------------------------------------------------
+class TestBidsPathsDerivatives:
+    def _run(self, root: Path, out_dir: Path, **kwargs):
+        return extract.bids_paths(
+            root=root, derivatives_dir="fmriprep", output_dir=out_dir, **kwargs
+        )
+
+    def test_desc_appended_across_variants(self, fmriprep_root: Path, tmp_path: Path):
+        out_dir = (tmp_path / "out").resolve()
+        run_paths = self._run(fmriprep_root, out_dir)
+
+        names = sorted(rp.out_eye_path.name for rp in run_paths)
+        # Each input desc gets DESC_ADD appended; the desc-less run gets DESC_ADD
+        # on its own. All three stay distinct.
+        assert names == [
+            f"sub-01_task-rest_run-1_desc-{DESC_ADD}_bold.nii.gz",
+            f"sub-01_task-rest_run-1_desc-smoothed_{DESC_ADD}_bold.nii.gz",
+            "sub-01_task-rest_run-1_space-MNI152NLin2009cAsym"
+            f"_desc-preproc_{DESC_ADD}_bold.nii.gz",
+        ]
+
+    def test_space_entity_preserved(self, fmriprep_root: Path, tmp_path: Path):
+        out_dir = (tmp_path / "out").resolve()
+        run_paths = self._run(fmriprep_root, out_dir)
+
+        with_space = [
+            rp
+            for rp in run_paths
+            if "space-MNI152NLin2009cAsym" in rp.out_eye_path.name
+        ]
+        assert len(with_space) == 1
+        # The preserved space entity precedes the appended desc.
+        assert with_space[0].out_eye_path.name.endswith(
+            f"_desc-preproc_{DESC_ADD}_bold.nii.gz"
+        )
+
+    def test_report_desc_appended(self, fmriprep_root: Path, tmp_path: Path):
+        out_dir = (tmp_path / "out").resolve()
+        run_paths = self._run(fmriprep_root, out_dir)
+
+        preproc = next(
+            rp for rp in run_paths if "desc-preproc" in rp.out_eye_path.name
+        )
+        assert preproc.out_report_path.name.endswith(
+            f"_desc-preproc_{DESC_ADD}_report.html"
+        )
+
+    def test_pickle_naming(self, fmriprep_root: Path, tmp_path: Path):
+        out_dir = (tmp_path / "out").resolve()
+        run_paths = self._run(fmriprep_root, out_dir, as_pickle=True)
+
+        preproc = next(
+            rp for rp in run_paths if "desc-preproc" in rp.out_eye_path.name
+        )
+        assert preproc.out_eye_path.name.endswith(
+            f"_desc-preproc_{DESC_ADD}_timeseries.p"
+        )
+
+    def test_outputs_mirror_layout(self, fmriprep_root: Path, tmp_path: Path):
+        out_dir = (tmp_path / "out").resolve()
+        run_paths = self._run(fmriprep_root, out_dir)
+
+        for rp in run_paths:
+            assert rp.out_eye_path.parent == out_dir / "sub-01" / "func"
+
+    def test_missing_derivatives_dir_raises(self, fmriprep_root: Path, tmp_path: Path):
+        with pytest.raises(FileNotFoundError):
+            extract.bids_paths(
+                root=fmriprep_root,
+                derivatives_dir="doesnotexist",
+                output_dir=(tmp_path / "out").resolve(),
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -399,230 +501,3 @@ class TestProcessRun:
         assert rp.out_eye_path.parent.is_dir()
         assert calls[0][0] is rp
         assert calls[0][1]["as_pickle"] is True
-
-
-# ---------------------------------------------------------------------------
-# cli_main
-# ---------------------------------------------------------------------------
-class TestCliMain:
-    def test_parses_args_and_dispatches(self, monkeypatch, tmp_path: Path):
-        captured = {}
-
-        def _fake_extract(**kwargs):
-            captured.update(kwargs)
-
-        monkeypatch.setattr(extract, "extract_eyeball_voxels", _fake_extract)
-        monkeypatch.setattr(
-            "sys.argv",
-            [
-                "mreyextract",
-                "--root",
-                str(tmp_path),
-                "--task",
-                "rest",
-                "--force",
-                "--as-pickle",
-            ],
-        )
-
-        extract.cli_main()
-
-        assert captured["root"] == str(tmp_path)
-        assert captured["force"] is True
-        assert captured["as_pickle"] is True
-        assert captured["filters"]["task"] == ["rest"]
-        # Parallelism defaults to serial.
-        assert captured["n_jobs"] == 1
-        assert captured["threads_per_job"] is None
-
-    def test_parallel_flags(self, monkeypatch, tmp_path: Path):
-        captured = {}
-        monkeypatch.setattr(
-            extract, "extract_eyeball_voxels", lambda **kw: captured.update(kw)
-        )
-        monkeypatch.setattr(
-            "sys.argv",
-            [
-                "mreyextract",
-                "--root",
-                str(tmp_path),
-                "--n-jobs",
-                "4",
-                "--threads-per-job",
-                "2",
-            ],
-        )
-
-        extract.cli_main()
-        assert captured["n_jobs"] == 4
-        assert captured["threads_per_job"] == 2
-
-    def test_bids_filter_file_merged(self, monkeypatch, tmp_path: Path):
-        captured = {}
-        monkeypatch.setattr(
-            extract, "extract_eyeball_voxels", lambda **kw: captured.update(kw)
-        )
-
-        filter_file = tmp_path / "filters.json"
-        filter_file.write_text('{"session": "01"}')
-
-        monkeypatch.setattr(
-            "sys.argv",
-            [
-                "mreyextract",
-                "--root",
-                str(tmp_path),
-                "--bids-filter-file",
-                str(filter_file),
-            ],
-        )
-
-        extract.cli_main()
-        assert captured["filters"]["session"] == "01"
-
-    def test_entity_value_conversions(self, monkeypatch, tmp_path: Path):
-        from bids.layout import Query
-
-        captured = {}
-        monkeypatch.setattr(
-            extract, "extract_eyeball_voxels", lambda **kw: captured.update(kw)
-        )
-        monkeypatch.setattr(
-            "sys.argv",
-            [
-                "mreyextract",
-                "--root",
-                str(tmp_path),
-                "--subject",
-                "sub-01",  # prefix stripped -> "01"
-                "--session",
-                "none",  # -> Query.NONE
-                "--task",
-                "*",  # -> Query.ANY
-                "--run",
-                "3",  # int-typed
-            ],
-        )
-
-        extract.cli_main()
-
-        filters = captured["filters"]
-        assert filters["subject"] == ["01"]
-        assert filters["session"] == [Query.NONE]
-        assert filters["task"] == [Query.ANY]
-        assert filters["run"] == [3]
-
-    def test_root_is_required(self, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["mreyextract"])
-        with pytest.raises(SystemExit):
-            extract.cli_main()
-
-
-# ---------------------------------------------------------------------------
-# config-file support
-# ---------------------------------------------------------------------------
-class TestConfig:
-    def test_load_config_reads_extract_section(self, tmp_path: Path):
-        cfg = tmp_path / "run.yaml"
-        cfg.write_text(
-            "extract:\n"
-            "  root: /data/bids\n"
-            "  n_jobs: 4\n"
-            "  filters:\n"
-            "    task: [rest]\n"
-            "slurm:\n"
-            "  partition: defq\n"
-        )
-        loaded = extract._load_config(cfg)
-        assert loaded["root"] == "/data/bids"
-        assert loaded["n_jobs"] == 4
-        assert loaded["filters"] == {"task": ["rest"]}
-        assert "partition" not in loaded  # slurm section is ignored
-
-    def test_load_config_missing_extract_section(self, tmp_path: Path):
-        cfg = tmp_path / "run.yaml"
-        cfg.write_text("slurm:\n  partition: defq\n")
-        assert extract._load_config(cfg) == {}
-
-    def test_convert_filter_value_sentinels(self):
-        from bids.layout import Query
-
-        assert extract._convert_filter_value("*") is Query.ANY
-        assert extract._convert_filter_value("none") is Query.NONE
-        assert extract._convert_filter_value("null") is Query.NONE
-        assert extract._convert_filter_value(["rest", "*"]) == ["rest", Query.ANY]
-        assert extract._convert_filter_value("rest") == "rest"
-
-    def _write_config(self, tmp_path: Path, body: str) -> Path:
-        cfg = tmp_path / "run.yaml"
-        cfg.write_text(body)
-        return cfg
-
-    def test_config_seeds_arguments(self, monkeypatch, tmp_path: Path):
-        cfg = self._write_config(
-            tmp_path,
-            "extract:\n"
-            f"  root: {tmp_path}\n"
-            "  derivatives_dir: fmriprep\n"
-            "  n_jobs: 4\n"
-            "  threads_per_job: 2\n"
-            "  filters:\n"
-            "    task: [rest]\n",
-        )
-        captured = {}
-        monkeypatch.setattr(
-            extract, "extract_eyeball_voxels", lambda **kw: captured.update(kw)
-        )
-        monkeypatch.setattr("sys.argv", ["mreyextract", "--config", str(cfg)])
-
-        extract.cli_main()
-
-        assert captured["root"] == str(tmp_path)
-        assert captured["derivatives_dir"] == "fmriprep"
-        assert captured["n_jobs"] == 4
-        assert captured["threads_per_job"] == 2
-        assert captured["filters"]["task"] == ["rest"]
-
-    def test_cli_overrides_config(self, monkeypatch, tmp_path: Path):
-        cfg = self._write_config(
-            tmp_path,
-            "extract:\n"
-            f"  root: {tmp_path}\n"
-            "  n_jobs: 4\n"
-            "  filters:\n"
-            "    task: [rest]\n",
-        )
-        captured = {}
-        monkeypatch.setattr(
-            extract, "extract_eyeball_voxels", lambda **kw: captured.update(kw)
-        )
-        monkeypatch.setattr(
-            "sys.argv",
-            ["mreyextract", "--config", str(cfg), "--n-jobs", "1", "--task", "rest2"],
-        )
-
-        extract.cli_main()
-
-        # CLI value wins over the config value.
-        assert captured["n_jobs"] == 1
-        assert captured["filters"]["task"] == ["rest2"]
-
-    def test_root_from_config_not_required_on_cli(self, monkeypatch, tmp_path: Path):
-        cfg = self._write_config(tmp_path, f"extract:\n  root: {tmp_path}\n")
-        captured = {}
-        monkeypatch.setattr(
-            extract, "extract_eyeball_voxels", lambda **kw: captured.update(kw)
-        )
-        monkeypatch.setattr("sys.argv", ["mreyextract", "--config", str(cfg)])
-
-        # Should not raise even though --root is absent from the command line.
-        extract.cli_main()
-        assert captured["root"] == str(tmp_path)
-
-    def test_unknown_config_key_errors(self, monkeypatch, tmp_path: Path):
-        cfg = self._write_config(
-            tmp_path, f"extract:\n  root: {tmp_path}\n  bogus_key: 1\n"
-        )
-        monkeypatch.setattr("sys.argv", ["mreyextract", "--config", str(cfg)])
-        with pytest.raises(SystemExit):
-            extract.cli_main()

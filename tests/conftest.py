@@ -26,6 +26,42 @@ def bids_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def fmriprep_root(tmp_path: Path) -> Path:
+    """A BIDS dataset with an fMRIPrep pipeline under ``derivatives/fmriprep``.
+
+    The derivative BOLD runs carry ``desc`` (and ``space``) entities so the
+    derivatives branch of ``bids_paths`` and DESC_ADD appending can be exercised.
+    Returns the resolved dataset root.
+    """
+    root = (tmp_path / "bids").resolve()
+    deriv = root / "derivatives" / "fmriprep"
+    func = deriv / "sub-01" / "func"
+    func.mkdir(parents=True)  # also creates root and derivatives/fmriprep
+
+    (root / "dataset_description.json").write_text(
+        json.dumps({"Name": "raw", "BIDSVersion": "1.8.0"})
+    )
+    (deriv / "dataset_description.json").write_text(
+        json.dumps(
+            {
+                "Name": "fMRIPrep",
+                "BIDSVersion": "1.8.0",
+                "GeneratedBy": [{"Name": "fmriprep"}],
+            }
+        )
+    )
+
+    for name in (
+        "sub-01_task-rest_run-1_space-MNI152NLin2009cAsym_desc-preproc_bold.nii.gz",
+        "sub-01_task-rest_run-1_desc-smoothed_bold.nii.gz",
+        "sub-01_task-rest_run-1_bold.nii.gz",  # no desc
+    ):
+        (func / name).write_bytes(b"")
+
+    return root
+
+
+@pytest.fixture
 def non_bids_root(tmp_path: Path) -> Path:
     """A plain (non-BIDS) tree containing NIfTI and non-NIfTI files."""
     root = (tmp_path / "raw").resolve()

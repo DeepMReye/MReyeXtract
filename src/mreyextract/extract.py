@@ -2,41 +2,22 @@
 Preprocessing pipeline to clean and extract eye voxels from fmri data
 """
 
-import json
 import os
 import re
 from functools import lru_cache
 from pathlib import Path
 
-import argparse
 import logging
 
 from joblib import Parallel, delayed
 from joblib.externals.loky import cpu_count as loky_cpu_count
 
-from bids.layout import Query
 from bids import BIDSLayout, BIDSLayoutIndexer
 
-from mreyextract import preprocess, enable_logging, _ensure_worker_logging
-from mreyextract.io import mreyextract_root, RunPaths
+from mreyextract import preprocess, _ensure_worker_logging
+from mreyextract.io import mreyextract_root, RunPaths, PATTERN, DESC_ADD
 
 logger = logging.getLogger(__name__)
-
-PATTERN = (
-    "sub-{subject}[/ses-{session}]/{datatype}/"
-    "sub-{subject}[_ses-{session}][_task-{task}][_run-{run}]"
-    "[_space-{space}][_desc-{desc}]_{suffix}{extension}"
-)
-
-ENTITIES = {
-    "subject": (str, "sub"),
-    "session": (str, "ses"),
-    "task": (str, None),
-    "run": (int, None),
-    "space": (str, None),
-    "desc": (str, None),
-    "echo": (int, None),
-}
 
 
 def strip_nifti_ext(name: str) -> str:
@@ -108,15 +89,15 @@ def non_bids_paths(
     seen: dict[Path, Path] = {}
     for in_file in sorted(Path(root).glob(glob_pattern)):
         in_file = in_file.resolve()
-        if not in_file.name.endswith((".nii", ".nii.gz")):  # *.nii* also hits .nii.json
+        if not in_file.name.endswith((".nii", ".nii.gz")):
             continue
         if output_dir in in_file.parents:  # don't re-ingest our own output
             continue
 
         stem = strip_nifti_ext(in_file.name)
         rel = in_file.relative_to(root).parent
-        out_eye = output_dir / rel / f"{stem}_desc-eye{ext}"
-        out_report = output_dir / rel / f"{stem}_desc-eye_report.html"
+        out_eye = output_dir / rel / f"{stem}_{DESC_ADD}{ext}"
+        out_report = output_dir / rel / f"{stem}_{DESC_ADD}_report.html"
 
         if out_eye in seen:
             raise ValueError(f"Collision: {seen[out_eye]} and {in_file} -> {out_eye}")
@@ -256,11 +237,19 @@ def bids_paths(  # pylint: disable=too-many-locals
             suffix = "bold"
             ext = ".nii.gz"
 
-        ents.update(desc="eye", suffix=suffix, extension=ext)
+        # Append (not overwrite) the eye marker to the input's desc so eye
+        # outputs from, e.g., raw and preprocessed BOLD stay distinct:
+        # desc-preproc -> desc-preproc_eye, and no desc -> desc-eye.
+        orig_desc = ents.get("desc")
+        eye_desc = f"{orig_desc}_{DESC_ADD}" if orig_desc else DESC_ADD
+
+        ents.update(desc=eye_desc, suffix=suffix, extension=ext)
         out_eye = output_dir / layout.build_path(
             ents, path_patterns=[PATTERN], validate=False, absolute_paths=False
         )
 
+        # With every entity preserved in PATTERN this should not fire for a valid
+        # dataset; kept as a cheap backstop against silently overwriting outputs.
         if out_eye in seen:
             raise ValueError(f"Collision: {seen[out_eye]} and {file.path} -> {out_eye}")
         seen[out_eye] = file.path
@@ -269,7 +258,7 @@ def bids_paths(  # pylint: disable=too-many-locals
             logger.info("Skipping %s that already exists", out_eye)
             continue
 
-        ents.update(desc="eye", suffix="report", extension="html")
+        ents.update(suffix="report", extension="html")
         out_report = output_dir / layout.build_path(
             ents, path_patterns=[PATTERN], validate=False, absolute_paths=False
         )
@@ -450,285 +439,3 @@ def extract_eyeball_voxels(  # pylint: disable=too-many-locals
             delayed(_process_run)(run_path, as_pickle=as_pickle)
             for run_path in run_paths
         )
-
-
-# -----------------------
-# Main Functions
-# -----------------------
-
-
-def _load_config(path: Path) -> dict:
-    """
-    Load the ``extract`` section of a YAML run-config file.
-
-    Parameters
-    ----------
-    path : Path
-        Path to a YAML file with a top-level ``extract:`` mapping whose keys
-        mirror the CLI options (using underscores, e.g. ``n_jobs``). A nested
-        ``filters:`` mapping supplies BIDS entity filters.
-
-    Returns
-    -------
-    dict
-        The ``extract`` mapping, or an empty dict if the section is absent.
-    """
-    import yaml  # pylint: disable=import-outside-toplevel
-
-    data = yaml.safe_load(path.read_text()) or {}
-    return data.get("extract", {}) or {}
-
-
-def _convert_filter_value(value):
-    """
-    Apply PyBIDS sentinel conversion to a config-supplied filter value.
-
-    Parameters
-    ----------
-    value : object
-        A scalar or list from the config's ``filters`` mapping. ``"*"`` becomes
-        ``Query.ANY`` and ``"none"``/``"null"`` become ``Query.NONE``; lists are
-        converted element-wise.
-
-    Returns
-    -------
-    object
-        The converted value.
-    """
-
-    def _conv(item):
-        if item == "*":
-            return Query.ANY
-        if isinstance(item, str) and item.lower() in ("none", "null"):
-            return Query.NONE
-        return item
-
-    if isinstance(value, list):
-        return [_conv(item) for item in value]
-    return _conv(value)
-
-
-def cli_main() -> None:
-    """
-    Command-line entry point for the ``mreyextract`` console script.
-
-    Parses arguments, optionally seeding defaults from a ``--config`` YAML file
-    (explicit CLI flags take precedence), assembles BIDS entity filters
-    (optionally merged from a ``--bids-filter-file``), configures logging and
-    dispatches to :func:`extract_eyeball_voxels`.
-
-    Returns
-    -------
-    None
-    """
-
-    def _pybids_none_any(dct):
-        """
-        Map filter-file sentinels to PyBIDS query constants.
-
-        Parameters
-        ----------
-        dct : dict
-            Entity filters loaded from JSON. ``None`` values become
-            ``Query.NONE`` and ``"*"`` values become ``Query.ANY``.
-
-        Returns
-        -------
-        dict
-            The filters with sentinels replaced by PyBIDS query constants.
-        """
-        return {
-            k: Query.NONE if v is None else (Query.ANY if v == "*" else v)
-            for k, v in dct.items()
-        }
-
-    def entity_value(typ, prefix=None):
-        """
-        Build an argparse ``type`` converter for a BIDS entity value.
-
-        Parameters
-        ----------
-        typ : type
-            Callable applied to the final string (e.g. ``str`` or ``int``).
-        prefix : str | None, optional
-            Entity prefix (e.g. ``"sub"``) stripped from values like
-            ``"sub-01"`` before conversion. Default ``None``.
-
-        Returns
-        -------
-        Callable[[str], object]
-            A converter mapping ``"*"`` to ``Query.ANY``, ``"none"``/``"null"``
-            to ``Query.NONE`` and everything else through ``typ``.
-        """
-
-        def _conv(s: str):
-            if s == "*":
-                return Query.ANY
-            if s.lower() in ("none", "null"):
-                return Query.NONE
-            if prefix:
-                s = s.removeprefix(f"{prefix}-")
-            return typ(s)
-
-        return _conv
-
-    def run_default(args, filters):
-        """
-        Dispatch parsed arguments to :func:`extract_eyeball_voxels`.
-
-        Parameters
-        ----------
-        args : argparse.Namespace
-            Parsed command-line arguments.
-        filters : dict
-            Assembled BIDS entity filters.
-        """
-        return extract_eyeball_voxels(
-            root=args.root,
-            derivatives_dir=args.derivatives_dir,
-            filters=filters,
-            bids_compatible=args.bids_compatible,
-            force=args.force,
-            as_pickle=args.as_pickle,
-            glob_pattern=args.glob_pattern,
-            n_jobs=args.n_jobs,
-            threads_per_job=args.threads_per_job,
-        )
-
-    # First pass: discover a --config file so its values can seed defaults.
-    config_parser = argparse.ArgumentParser(add_help=False)
-    config_parser.add_argument("--config", type=Path)
-    config_args, _ = config_parser.parse_known_args()
-
-    config = _load_config(config_args.config) if config_args.config else {}
-    config_filters = config.pop("filters", {}) or {}
-
-    parser = argparse.ArgumentParser(
-        prog="mreyextract", description="Run eye voxel extraction."
-    )
-
-    parser.add_argument(
-        "--config",
-        type=Path,
-        required=False,
-        help="YAML config file whose 'extract' section seeds the options below. "
-        "Explicit CLI flags override values from the file.",
-    )
-
-    parser.add_argument(
-        "--root",
-        type=str,
-        required="root" not in config,
-        help="[BIDS] Root directory to look for BOLD files in.",
-    )
-
-    parser.add_argument(
-        "--bids-compatible",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Whether root is BIDS compatible or not. Default is True.",
-    )
-
-    parser.add_argument(
-        "--derivatives-dir",
-        type=str,
-        required=False,
-        help="If --bids is True, specify the relative derivative directory "
-        "you want to extract from. E.g., fmriprep",
-    )
-
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        required=False,
-        help="Overwrite existing derivatives if they exist",
-    )
-
-    parser.add_argument(
-        "--as-pickle",
-        action="store_true",
-        required=False,
-        help="Saves the eye voxels as pickle files instead of Nifti",
-    )
-
-    parser.add_argument(
-        "--n-jobs",
-        type=int,
-        default=1,
-        required=False,
-        help="Number of runs to process in parallel (loky process pool). "
-        "1 (default) runs serially; -1 uses all available cores.",
-    )
-
-    parser.add_argument(
-        "--threads-per-job",
-        type=int,
-        default=None,
-        required=False,
-        help="ITK/ANTs threads per parallel job. Defaults to "
-        "cores // n_jobs to avoid oversubscribing the machine.",
-    )
-
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        required=False,
-        help="Logging level (DEBUG, INFO, WARNING, ERROR).",
-    )
-
-    parser.add_argument(
-        "--glob-pattern",
-        default="sub-*/**/func/*_bold.nii*",
-        required=False,
-        help="If non-bids, specify the regexp to glob through the root directory. "
-        "Default is 'sub-*/**/func/*_bold.nii*'",
-    )
-
-    for name, (typ, prefix) in ENTITIES.items():
-        parser.add_argument(
-            f"--{name}",
-            nargs="+",
-            type=entity_value(typ, prefix),
-            help=f"Optional {name} filter for file querying. "
-            f"For safety, wrap everything in quote marks. E.g., '*'",
-        )
-
-    parser.add_argument(
-        "--bids-filter-file",
-        type=Path,
-        required=False,
-        help="JSON of BIDS entity filters",
-    )
-
-    # Seed argparse defaults from the config so CLI flags still override them.
-    if config:
-        valid_dests = {action.dest for action in parser._actions}
-        unknown = set(config) - valid_dests
-        if unknown:
-            parser.error(f"Unknown key(s) under 'extract' in config: {sorted(unknown)}")
-        parser.set_defaults(**{key: config[key] for key in config})
-
-    args = parser.parse_args()
-
-    # Paths coming from the config arrive as plain strings.
-    if isinstance(args.bids_filter_file, str):
-        args.bids_filter_file = Path(args.bids_filter_file)
-
-    # Filters: config first, then CLI entity flags override, then filter file.
-    filters = {k: _convert_filter_value(v) for k, v in config_filters.items()}
-    filters.update(
-        {k: v for k, v in vars(args).items() if k in ENTITIES and v is not None}
-    )
-
-    if args.bids_filter_file:
-        filters.update(
-            json.loads(args.bids_filter_file.read_text(), object_hook=_pybids_none_any)
-        )
-
-    enable_logging(level=args.log_level.upper())
-
-    logger.info("Starting eye-voxel extraction.")
-
-    logger.info("Filtering files on %s", json.dumps(filters, default=str))
-
-    run_default(args, filters)

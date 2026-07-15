@@ -6,6 +6,35 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+# ---------------------------------------- #
+# BIDS CONSTANTS
+# ---------------------------------------- #
+
+# Every optional entity is preserved so the eye-output name is never less
+# specific than its input (which would silently map two inputs onto one file).
+# Placeholders use PyBIDS entity names; entities appear in canonical BIDS order.
+PATTERN = (
+    "sub-{subject}[/ses-{session}]/{datatype}/"
+    "sub-{subject}[_ses-{session}][_task-{task}][_acq-{acquisition}]"
+    "[_ce-{ceagent}][_rec-{reconstruction}][_dir-{direction}][_run-{run}]"
+    "[_mod-{modality}][_echo-{echo}][_flip-{flip}][_inv-{inv}][_mt-{mt}]"
+    "[_part-{part}][_proc-{proc}][_hemi-{hemi}][_space-{space}]"
+    "[_res-{res}][_den-{den}][_label-{label}][_desc-{desc}]"
+    "_{suffix}{extension}"
+)
+
+ENTITIES = {
+    "subject": (str, "sub"),
+    "session": (str, "ses"),
+    "task": (str, None),
+    "run": (int, None),
+    "space": (str, None),
+    "desc": (str, None),
+    "echo": (int, None),
+}
+
+DESC_ADD = "masked_eye"
+
 
 @dataclass
 class RunPaths:
