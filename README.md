@@ -239,4 +239,4 @@ and emits a `derivatives/mreyextract/` folder with a `dataset_description.json`.
 ## Correspondence
 
 If you have questions, comments or inquiries, please reach out to us:
-zachnudels[at]gmail.com
+z.b.nudelman[at]vu.nl; m.nau[at]vu.nl

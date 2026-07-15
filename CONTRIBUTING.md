@@ -9,7 +9,7 @@ directly from your pull request, so please read this before contributing.
 
 For anything larger than a small fix, please **open an issue first** so we can
 agree on the approach before you invest time. Questions are welcome at
-zachnudels[at]gmail.com.
+z.b.nudelman[at]vu.nl; m.nau[at]vu.nl.
 
 ## Development setup
 
