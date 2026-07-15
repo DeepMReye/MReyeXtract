@@ -44,8 +44,8 @@ jobs:
         uses: python-semantic-release/python-semantic-release@v10.6.1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          commit: false        # never modify the protected main branch
-          push: false          # the tag is created on the remote by vcs_release
+          commit: false        # no commit -> the protected main branch is never modified
+          push: true           # push only the tag (there is no commit to push)
           tag: true
           changelog: false     # changelog lives in the GitHub Release notes
           build: false         # the publish job builds from the tag
