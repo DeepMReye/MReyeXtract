@@ -1,4 +1,5 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPL%20v3-blue.svg)](http://www.gnu.org/licenses/gpl-3.0)
+[![PyPI](https://img.shields.io/pypi/v/mreyextract.svg)](https://pypi.org/project/mreyextract/)
 ![py311 status](https://img.shields.io/badge/python3.11-supported-green.svg)
 [![NatNeuro Paper](https://img.shields.io/badge/DOI-10.1038%2Fs41593--021--00947--w-blue)](https://doi.org/10.1038/s41593-021-00947-w)
 [![DeepMReye](https://img.shields.io/badge/built%20on-DeepMReye-orange.svg)](https://github.com/DeepMReye/DeepMReye)
@@ -20,33 +21,33 @@ If you have questions or comments, please reach out (see [Correspondence](#corre
 
 MReyeXtract requires <u>**Python 3.11**</u>.
 
-### Option 1: Pip install
+### From PyPI
 
-#### Pip installation
+Install the latest release from [PyPI](https://pypi.org/project/mreyextract/)
+into a virtual environment:
 
 ```bash
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -e .
+pip install mreyextract
 ```
 
-For development (tests, linting, type checking):
-
-```bash
-pip install -e ".[dev]"
-```
-
-#### Anaconda / Miniconda installation
+Or into a conda environment:
 
 ```bash
 conda create --name mreyextract python=3.11
 conda activate mreyextract
-pip install -e .
+pip install mreyextract
 ```
 
 If ANTsPy does not resolve a wheel for your platform, install it manually first
 (see the [ANTsPy installation guide](https://github.com/ANTsX/ANTsPy)) and then
 re-run the install above.
+
+### From source
+
+To modify or contribute to MReyeXtract, install an editable checkout with the
+development extras — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Usage
 
@@ -225,68 +226,9 @@ pytest
 
 ## Development
 
-MReyeXtract is maintained as part of the OpenMReye ecosystem and is a
-dependency of other packages, so releases follow an automated, convention-based
-pipeline. Please read this section before contributing.
-
-### Local setup
-
-```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
-
-Run the full check suite (mirrors CI) before pushing:
-
-```bash
-./format_and_test.sh          # black, mypy, pylint, tests
-```
-
-### Branch and commit workflow
-
-`main` is protected: no direct pushes. All changes land through pull requests
-that are **squash-merged**, so **the PR title becomes the commit message on
-`main`**. That title must be a valid
-[Conventional Commit](https://www.conventionalcommits.org/), because it is what
-drives the next version number:
-
-| PR title prefix | Example | Release effect |
-| --- | --- | --- |
-| `fix:` | `fix: correct mask resampling origin` | patch (`0.1.0` → `0.1.1`) |
-| `feat:` | `feat: add --as-pickle output` | minor (`0.1.0` → `0.2.0`) |
-| `feat!:` / `BREAKING CHANGE:` | `feat!: drop Python 3.10 support` | major bump* |
-| `docs:` / `chore:` / `ci:` / `test:` / `refactor:` | `docs: clarify SLURM template` | no release |
-
-<sub>*While the package is in `0.x` (`allow_zero_version`, `major_on_zero =
-false`), a breaking change bumps the **minor** version rather than jumping to
-`1.0.0`. Graduating to `1.0.0` is a deliberate decision to make once the API is
-stable, since downstream packages pin against these numbers.</sub>
-
-The PR title is checked automatically (`pr-title.yml`); a malformed title blocks
-the merge.
-
-### How a release happens
-
-The pipeline is fully automated and stores **no secrets** — you never bump a
-version or publish by hand:
-
-1. **`ci.yml`** runs the check suite on every PR. These are required status
-   checks, so `main` is always green.
-2. On merge to `main`, **`release.yml`** runs. Its first job uses
-   [python-semantic-release](https://python-semantic-release.readthedocs.io/):
-   it reads the Conventional Commits since the last release, and *if* there is
-   something to release, creates the `vX.Y.Z` git tag and a GitHub Release
-   (whose notes are the changelog). It is configured **not** to commit or push
-   to `main`, so the branch is never touched and the default `GITHUB_TOKEN`
-   suffices. The version lives only in git tags and is read at build time by
-   `hatch-vcs`.
-3. The workflow's second job then builds the sdist/wheel from that tag and
-   uploads to [PyPI](https://pypi.org/p/mreyextract) via **Trusted Publishing**
-   (OIDC — no PyPI token anywhere). It runs in the `pypi` deployment
-   environment, so the upload waits on manual approval.
-
-Pure `docs:`/`chore:` merges produce no release, so `main` does not spam PyPI.
+Contributions are welcome. For development setup, the check suite, PR
+conventions, and how releases are automated, see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## BIDS app
 
