@@ -1,0 +1,35 @@
+# Because main uses squash-merge, the PR title becomes the single commit
+# message on main, which is what python-semantic-release reads to decide the
+# version bump. This check enforces that the title is a valid Conventional
+# Commit (e.g. "feat: ...", "fix: ...", "feat!: ..."). Make it a required
+# status check so a malformed title cannot be merged.
+
+name: Lint PR title
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Keep in sync with the commit types semantic-release understands.
+          types: |
+            feat
+            fix
+            perf
+            refactor
+            docs
+            test
+            build
+            ci
+            chore
+            revert

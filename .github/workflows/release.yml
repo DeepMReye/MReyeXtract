@@ -1,0 +1,79 @@
+# Fully automated release on every push to main, with no stored secrets.
+#
+# Job 1 (release): python-semantic-release reads the Conventional Commit
+# messages since the last release and, if there is something to release,
+# computes the next version and creates the git tag + GitHub Release. It is
+# configured NOT to commit or push to main (commit/push: false), so the
+# protected branch is never touched and the built-in GITHUB_TOKEN is
+# sufficient. The changelog lives in the GitHub Release notes.
+#
+# Job 2 (publish): builds the sdist/wheel from the freshly created tag
+# (hatch-vcs reads the version from it) and uploads to PyPI via Trusted
+# Publishing (OIDC) -- no PyPI token. It runs in the `pypi` environment, so
+# configuring required reviewers there gates each upload behind manual
+# approval.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # create the tag + GitHub Release
+    outputs:
+      released: ${{ steps.release.outputs.released }}
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Python Semantic Release
+        id: release
+        uses: python-semantic-release/python-semantic-release@v10.6.1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          commit: false        # never modify the protected main branch
+          push: false          # the tag is created on the remote by vcs_release
+          tag: true
+          changelog: false     # changelog lives in the GitHub Release notes
+          build: false         # the publish job builds from the tag
+          vcs_release: true    # create the GitHub Release (+ remote tag)
+
+  publish:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mreyextract
+    permissions:
+      id-token: write          # PyPI Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}   # build the exact released version
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build release distributions
+        run: |
+          python -m pip install build
+          python -m build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

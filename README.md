@@ -223,6 +223,71 @@ range to match the number of subjects), the `module load` line (must be a
 pytest
 ```
 
+## Development
+
+MReyeXtract is maintained as part of the OpenMReye ecosystem and is a
+dependency of other packages, so releases follow an automated, convention-based
+pipeline. Please read this section before contributing.
+
+### Local setup
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+Run the full check suite (mirrors CI) before pushing:
+
+```bash
+./format_and_test.sh          # black, mypy, pylint, tests
+```
+
+### Branch and commit workflow
+
+`main` is protected: no direct pushes. All changes land through pull requests
+that are **squash-merged**, so **the PR title becomes the commit message on
+`main`**. That title must be a valid
+[Conventional Commit](https://www.conventionalcommits.org/), because it is what
+drives the next version number:
+
+| PR title prefix | Example | Release effect |
+| --- | --- | --- |
+| `fix:` | `fix: correct mask resampling origin` | patch (`0.1.0` → `0.1.1`) |
+| `feat:` | `feat: add --as-pickle output` | minor (`0.1.0` → `0.2.0`) |
+| `feat!:` / `BREAKING CHANGE:` | `feat!: drop Python 3.10 support` | major bump* |
+| `docs:` / `chore:` / `ci:` / `test:` / `refactor:` | `docs: clarify SLURM template` | no release |
+
+<sub>*While the package is in `0.x` (`allow_zero_version`, `major_on_zero =
+false`), a breaking change bumps the **minor** version rather than jumping to
+`1.0.0`. Graduating to `1.0.0` is a deliberate decision to make once the API is
+stable, since downstream packages pin against these numbers.</sub>
+
+The PR title is checked automatically (`pr-title.yml`); a malformed title blocks
+the merge.
+
+### How a release happens
+
+The pipeline is fully automated and stores **no secrets** — you never bump a
+version or publish by hand:
+
+1. **`ci.yml`** runs the check suite on every PR. These are required status
+   checks, so `main` is always green.
+2. On merge to `main`, **`release.yml`** runs. Its first job uses
+   [python-semantic-release](https://python-semantic-release.readthedocs.io/):
+   it reads the Conventional Commits since the last release, and *if* there is
+   something to release, creates the `vX.Y.Z` git tag and a GitHub Release
+   (whose notes are the changelog). It is configured **not** to commit or push
+   to `main`, so the branch is never touched and the default `GITHUB_TOKEN`
+   suffices. The version lives only in git tags and is read at build time by
+   `hatch-vcs`.
+3. The workflow's second job then builds the sdist/wheel from that tag and
+   uploads to [PyPI](https://pypi.org/p/mreyextract) via **Trusted Publishing**
+   (OIDC — no PyPI token anywhere). It runs in the `pypi` deployment
+   environment, so the upload waits on manual approval.
+
+Pure `docs:`/`chore:` merges produce no release, so `main` does not spam PyPI.
+
 ## BIDS app
 
 MReyeXtract reads and writes BIDS-compatible layouts: it queries BOLD files with

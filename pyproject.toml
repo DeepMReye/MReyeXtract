@@ -66,6 +66,18 @@ source = "vcs"
 [tool.hatch.metadata]
 allow-direct-references = true
 
+# ---- Automated releases (python-semantic-release) ----
+# Version lives only in git tags (read by hatch-vcs), so no version file is
+# configured here. PSR derives the current version from the latest matching
+# tag and computes the next one from Conventional Commit messages.
+[tool.semantic_release]
+tag_format = "v{version}"
+allow_zero_version = true   # stay in 0.x while the API is unstable
+major_on_zero = false       # a breaking change bumps minor, not to 1.0.0
+
+[tool.semantic_release.branches.main]
+match = "main"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
