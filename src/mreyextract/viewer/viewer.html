@@ -228,8 +228,12 @@ const state = {
   selected: null,
   search: "",
   statusFilter: "all",
-  saving: 0,
 };
+
+// Verdicts waiting to be written, keyed by the report they belong to, and
+// whether a write is currently in flight.
+const outbox = new Map();
+let saving = false;
 
 // One frame holds the report on screen, the other pre-loads a neighbour. Their
 // dataset.path records what each currently holds, so revisiting a report that
@@ -451,13 +455,11 @@ function rate(status, note) {
     note: note === undefined ? verdict(entry).note : note,
   };
   entry.pending = pending;
-  state.saving += 1;
+  outbox.set(entry, pending);
 
   // Move on without waiting for the write: the ratings file may live on a
   // network mount, and the next report is already loaded in the other frame.
-  // Queue behind this report's own writes so two quick verdicts on it are
-  // applied in the order they were given.
-  entry.queue = (entry.queue || Promise.resolve()).then(() => save(entry, pending));
+  save();
 
   if (next && next !== state.selected) {
     show(next);
@@ -466,15 +468,29 @@ function rate(status, note) {
   }
 }
 
-async function save(entry, pending) {
+// Verdicts given while a write is in flight are sent together when it returns,
+// so rating quickly costs one write per round-trip instead of one per report.
+// No timer is involved: on a fast disk each verdict goes on its own, and the
+// slower the ratings file is to write, the more the batches coalesce.
+async function save() {
+  if (saving || outbox.size === 0) {
+    return;
+  }
+
+  saving = true;
+  const batch = Array.from(outbox, ([entry, pending]) => ({ entry, pending }));
+  outbox.clear();
+
   try {
     const response = await fetch("/api/rating", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        path: entry.relative_path,
-        status: pending.status,
-        note: pending.note,
+        ratings: batch.map(({ entry, pending }) => ({
+          path: entry.relative_path,
+          status: pending.status,
+          note: pending.note,
+        })),
       }),
     });
 
@@ -483,19 +499,29 @@ async function save(entry, pending) {
       throw new Error(failure.error || response.statusText);
     }
 
-    // Only now is the verdict in the ratings file, so only now does the report
-    // take its colour. A failure leaves the last confirmed verdict standing.
-    entry.rating = (await response.json()).rating;
+    // Only now are the verdicts in the ratings file, so only now do their
+    // reports take their colour.
+    const stored = new Map(
+      (await response.json()).ratings.map((item) => [item.path, item.rating])
+    );
+    for (const { entry } of batch) {
+      entry.rating = stored.get(entry.relative_path) || entry.rating;
+    }
   } catch (error) {
+    // The verdicts are dropped, so each report falls back to the last one
+    // confirmed to be on disk.
     window.alert(
-      "Could not save the rating for " + entry.relative_path + ": " + error.message
+      "Could not save " + batch.length + " rating(s): " + error.message
     );
   } finally {
-    state.saving -= 1;
-    if (entry.pending === pending) {
-      entry.pending = null;
+    for (const { entry, pending } of batch) {
+      if (entry.pending === pending) {
+        entry.pending = null;
+      }
     }
+    saving = false;
     render();
+    save();
   }
 }
 
@@ -512,7 +538,7 @@ for (const frame of frames) {
 // Verdicts are written in the background, so a tab closed the instant after a
 // keypress could still have one in flight.
 window.addEventListener("beforeunload", (event) => {
-  if (state.saving > 0) {
+  if (saving || outbox.size > 0) {
     event.preventDefault();
     event.returnValue = "";
   }

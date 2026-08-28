@@ -18,9 +18,10 @@ from urllib.parse import unquote, urlparse
 
 from mreyextract.viewer.reports import (
     REPORT_PATTERNS,
+    Rating,
     RatingStatus,
     find_reports,
-    rate_report,
+    rate_reports,
     ratings_path,
 )
 
@@ -118,7 +119,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # pylint: disable=invalid-name
         """
-        Record a verdict submitted from the page.
+        Record the verdicts submitted from the page in one write.
         """
         route = unquote(urlparse(self.path).path)
         if route != "/api/rating":
@@ -132,29 +133,43 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "Malformed JSON body"}, HTTPStatus.BAD_REQUEST)
             return
 
-        relative_path = str(payload.get("path", ""))
-        if self._resolve(relative_path) is None:
-            self._send_json(
-                {"error": f"No such report {relative_path}"}, HTTPStatus.NOT_FOUND
-            )
-            return
+        # A single verdict is accepted in the body directly; the page batches
+        # whatever it accumulated while the previous write was in flight.
+        submitted = payload.get("ratings")
+        if submitted is None:
+            submitted = [payload]
 
-        try:
-            status = RatingStatus(str(payload.get("status", "")).lower())
-        except ValueError:
-            self._send_json(
-                {"error": f"Unknown status {payload.get('status')!r}"},
-                HTTPStatus.BAD_REQUEST,
-            )
-            return
+        verdicts = {}
+        for item in submitted:
+            relative_path = str(item.get("path", ""))
+            if self._resolve(relative_path) is None:
+                self._send_json(
+                    {"error": f"No such report {relative_path}"}, HTTPStatus.NOT_FOUND
+                )
+                return
 
-        rating = rate_report(
-            self.review_dir,
-            relative_path,
-            status,
-            note=str(payload.get("note", "")),
+            try:
+                status = RatingStatus(str(item.get("status", "")).lower())
+            except ValueError:
+                self._send_json(
+                    {"error": f"Unknown status {item.get('status')!r}"},
+                    HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            verdicts[relative_path] = Rating(
+                status=status, note=str(item.get("note", ""))
+            )
+
+        stored = rate_reports(self.review_dir, verdicts)
+        self._send_json(
+            {
+                "ratings": [
+                    {"path": relative_path, "rating": asdict(rating)}
+                    for relative_path, rating in stored.items()
+                ]
+            }
         )
-        self._send_json({"path": relative_path, "rating": asdict(rating)})
 
     def log_message(self, format: str, *args) -> None:  # pylint: disable=W0622
         """

@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -28,6 +29,11 @@ RATING_COLUMNS = ("path", "status", "note")
 SUBJECT_PATTERN = re.compile(r"sub-([a-zA-Z0-9]+)")
 
 UNKNOWN_SUBJECT = "unknown"
+
+# Directories listed at once while searching for reports. Sized for round-trip
+# latency rather than for cores: the walk spends its time waiting on a mount,
+# not computing.
+SCAN_WORKERS = 16
 
 # The viewer answers each request on its own thread, so a held-down rating key
 # or a note saved on top of a verdict puts several read-modify-writes of the
@@ -131,23 +137,117 @@ def report_subject(relative_path: str) -> str:
     return match.group(1) if match else UNKNOWN_SUBJECT
 
 
-def _is_hidden(relative_path: Path) -> bool:
+def _glob_regex(pattern: str) -> re.Pattern:
     """
-    Check whether a path is hidden or sits inside a hidden directory.
+    Compile a glob over relative paths into a regular expression.
+
+    Matching is done against paths this package has already read from a single
+    walk of the tree, rather than by handing each pattern to ``Path.glob`` and
+    walking again per pattern.
 
     Parameters
     ----------
-    relative_path : Path
-        Path relative to the review directory.
+    pattern : str
+        Glob relative to the review directory, e.g. ``"**/*_report.html"``.
+        ``**`` stands for any number of directories, ``*`` and ``?`` do not
+        cross a directory boundary.
 
     Returns
     -------
-    bool
-        ``True`` if any component starts with a dot. Copying a dataset onto a
-        non-HFS mount leaves an AppleDouble ``._sub-01_..._report.html`` beside
-        every report, which matches the report globs but is not one.
+    re.Pattern
+        Expression matching a whole POSIX relative path.
     """
-    return any(part.startswith(".") for part in relative_path.parts)
+    parts = []
+    segments = pattern.split("/")
+    for index, segment in enumerate(segments):
+        if segment == "**":
+            parts.append("(?:[^/]+/)*")
+            continue
+
+        expression = "".join(
+            "[^/]*" if char == "*" else "[^/]" if char == "?" else re.escape(char)
+            for char in segment
+        )
+        separator = "" if index == len(segments) - 1 else "/"
+        parts.append(expression + separator)
+
+    return re.compile("".join(parts) + r"\Z")
+
+
+def _scan_directory(directory: Path) -> tuple[list[Path], list[Path]]:
+    """
+    List one directory, separating files from directories to descend into.
+
+    Entries beginning with a dot are skipped here rather than filtered later, so
+    the walk never descends into a hidden tree at all -- a mount's ``.snapshot``
+    directory holds a full copy of the dataset per snapshot, and walking those
+    can cost more than the dataset itself.
+
+    Parameters
+    ----------
+    directory : Path
+        Directory to list.
+
+    Returns
+    -------
+    tuple[list[Path], list[Path]]
+        The files found, and the subdirectories to walk next. A directory that
+        cannot be read is logged and treated as empty.
+    """
+    files = []
+    directories = []
+
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.name.startswith("."):
+                    continue
+                # Symlinked directories are not followed, which keeps a link
+                # pointing back up the tree from looping forever.
+                if entry.is_dir(follow_symlinks=False):
+                    directories.append(Path(entry.path))
+                elif entry.is_file():
+                    files.append(Path(entry.path))
+    except OSError as error:
+        logger.warning("Could not read %s: %s", directory, error)
+
+    return files, directories
+
+
+def _scan_tree(root: Path, workers: int = SCAN_WORKERS) -> list[Path]:
+    """
+    Walk a directory tree, listing sibling directories concurrently.
+
+    Every listing of a directory on a network mount is a round-trip, and the
+    reviewer waits through all of them before the first report appears. The
+    walk is pure IO wait, so listing a whole level of the tree at once cuts that
+    wait roughly by the number of workers.
+
+    Parameters
+    ----------
+    root : Path
+        Directory to walk.
+    workers : int, optional
+        Directories to list concurrently. Default :data:`SCAN_WORKERS`.
+
+    Returns
+    -------
+    list[Path]
+        Every file in the tree, excluding hidden entries and anything beneath
+        a hidden directory.
+    """
+    files: list[Path] = []
+    level = [root]
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        while level:
+            next_level: list[Path] = []
+            for found_files, found_directories in pool.map(_scan_directory, level):
+                files.extend(found_files)
+                next_level.extend(found_directories)
+            level = next_level
+
+    return files
 
 
 def find_reports(
@@ -156,6 +256,9 @@ def find_reports(
 ) -> list[Report]:
     """
     Search a directory tree for quality-control reports and attach their ratings.
+
+    The tree is walked once and each file tested against every pattern, so
+    adding a pattern costs no extra IO.
 
     Parameters
     ----------
@@ -185,28 +288,23 @@ def find_reports(
     if patterns is None:
         patterns = REPORT_PATTERNS
 
+    matchers = [_glob_regex(pattern) for pattern in patterns]
     ratings = read_ratings(ratings_path(review_dir))
 
     reports: dict[str, Report] = {}
-    for pattern in patterns:
-        for path in review_dir.glob(pattern):
-            if not path.is_file():
-                continue
+    for path in _scan_tree(review_dir):
+        relative_path = path.relative_to(review_dir).as_posix()
+        if not any(matcher.match(relative_path) for matcher in matchers):
+            continue
 
-            relative_path = path.relative_to(review_dir).as_posix()
-            if relative_path in reports:  # already matched by an earlier pattern
-                continue
-            if _is_hidden(path.relative_to(review_dir)):
-                continue
+        reports[relative_path] = Report(
+            relative_path=relative_path,
+            label=path.name.removesuffix(".html"),
+            subject=report_subject(relative_path),
+            rating=ratings.get(relative_path, Rating()),
+        )
 
-            reports[relative_path] = Report(
-                relative_path=relative_path,
-                label=path.name.removesuffix(".html"),
-                subject=report_subject(relative_path),
-                rating=ratings.get(relative_path, Rating()),
-            )
-
-            logger.debug("Found report %s", relative_path)
+        logger.debug("Found report %s", relative_path)
 
     return [reports[relative_path] for relative_path in sorted(reports)]
 
@@ -294,6 +392,54 @@ def write_ratings(path: Path | str, ratings: dict[str, Rating]) -> None:
     os.replace(tmp_path, path)
 
 
+def rate_reports(
+    review_dir: Path | str, verdicts: dict[str, Rating]
+) -> dict[str, Rating]:
+    """
+    Record a batch of verdicts in a review directory's ratings file.
+
+    The whole batch costs one read-modify-write. Rating is a per-keypress
+    action, but the file it writes may sit on a network mount where a single
+    write is slow enough that a reviewer working quickly would otherwise queue
+    up behind their own earlier verdicts, so the viewer sends everything that
+    accumulated while the last write was in flight as one call.
+
+    Parameters
+    ----------
+    review_dir : Path | str
+        Directory being reviewed; its ratings file is updated.
+    verdicts : dict[str, Rating]
+        Report path (relative to ``review_dir``) to the verdict to record. A
+        verdict of ``UNRATED`` with no note drops the report from the file.
+
+    Returns
+    -------
+    dict[str, Rating]
+        The verdicts as stored, with notes normalised.
+    """
+    stored = {
+        relative_path: Rating(
+            status=rating.status, note=" ".join(rating.note.split())
+        )
+        for relative_path, rating in verdicts.items()
+    }
+
+    path = ratings_path(review_dir)
+    with _RATINGS_LOCK:
+        ratings = read_ratings(path)
+        for relative_path, rating in stored.items():
+            if rating.status is RatingStatus.UNRATED and not rating.note:
+                ratings.pop(relative_path, None)
+            else:
+                ratings[relative_path] = rating
+        write_ratings(path, ratings)
+
+    for relative_path, rating in stored.items():
+        logger.info("Rated %s as %s", relative_path, rating.status)
+
+    return stored
+
+
 def rate_report(
     review_dir: Path | str,
     relative_path: str,
@@ -327,16 +473,5 @@ def rate_report(
     Rating
         The rating as stored.
     """
-    rating = Rating(status=status, note=" ".join(note.split()))
-
-    path = ratings_path(review_dir)
-    with _RATINGS_LOCK:
-        ratings = read_ratings(path)
-        if rating.status is RatingStatus.UNRATED and not rating.note:
-            ratings.pop(relative_path, None)
-        else:
-            ratings[relative_path] = rating
-        write_ratings(path, ratings)
-
-    logger.info("Rated %s as %s", relative_path, rating.status)
-    return rating
+    verdict = Rating(status=status, note=note)
+    return rate_reports(review_dir, {relative_path: verdict})[relative_path]
