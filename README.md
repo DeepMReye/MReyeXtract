@@ -145,6 +145,67 @@ is safe when running interactively inside an allocation. Tune both together on a
 shared server, and keep an eye on memory — each concurrent run holds a full 4D
 BOLD volume in RAM.
 
+### Reviewing the reports
+
+Installing the package also exposes `mreyextract-view`, a small local web app for
+paging through the QC reports and marking each one good or bad:
+
+```bash
+mreyextract-view --root /path/to/bids_dataset
+```
+
+It serves the reports under `<root>/derivatives/mreyextract` at
+<http://127.0.0.1:8000> and opens a browser. The sidebar groups every report by
+subject and colours it by verdict, and notes can be attached to any report.
+
+**Reviewing a whole dataset is one keypress per report.** With **advance**
+ticked (the default), `g` marks the report good and `b` marks it bad, and either
+immediately moves on to the next one — so a dataset can be worked through
+without touching the mouse: look at the report, press one key, look at the next.
+`u` clears a verdict, and the up/down arrow keys move between reports without
+rating one. The next report is loaded in the background while the current one is
+on screen, so it is ready the moment you advance.
+
+The counts in the header and the status light beside each report change **only
+once the verdict is in `qc_ratings.tsv`**. A light stays dimmed while its write
+is still in flight, so a solid colour and a rising count confirm the file on
+disk was actually updated; a write that fails says so and leaves the report at
+its previous verdict rather than a colour that was never saved.
+
+Point it at reports written by another tool (e.g. DeepMReye's `report_*.html`)
+with `--review-dir`:
+
+```bash
+mreyextract-view --review-dir /path/to/reports
+```
+
+| Option | Description |
+| --- | --- |
+| `--root` | Dataset root whose `derivatives/mreyextract` reports are reviewed. |
+| `--review-dir` | Review this directory instead of a dataset's derivatives. |
+| `--pattern` | Glob(s) selecting report files. Default: `**/*_report.html **/report_*.html`. |
+| `--host` | Interface to bind. Default: `127.0.0.1`. |
+| `--port` | Port to serve on. Default: `8000`; `0` picks a free port. |
+| `--browser` / `--no-browser` | Open a browser on startup. Default: open. |
+| `--log-level` | Logging verbosity. Default: `INFO`. |
+
+Verdicts are written to `qc_ratings.tsv` in the reviewed directory — next to the
+reports and eye voxels they describe — as they are made, so a review can be
+interrupted and resumed, and two people can review the same dataset at once. The
+file is a plain table, ready for the analysis that follows:
+
+```python
+import pandas as pd
+
+ratings = pd.read_csv("derivatives/mreyextract/qc_ratings.tsv", sep="\t")
+usable = ratings.loc[ratings["status"] == "good", "path"]
+```
+
+Reports on a remote machine can be reviewed over an SSH tunnel
+(`ssh -L 8000:127.0.0.1:8000 user@host`) without copying anything down; the
+viewer binds to localhost only, and everything it serves is read from that
+directory.
+
 ### Python API
 
 The extraction entry point can also be called directly:
@@ -168,6 +229,7 @@ Outputs are written to a BIDS-style derivatives folder under the dataset root:
 ```
 <root>/derivatives/mreyextract/
     dataset_description.json
+    qc_ratings.tsv                                    # QC verdicts, if reviewed
     sub-01/func/
         sub-01_task-rest_run-1_desc-eye_bold.nii.gz   # masked eye voxels
         sub-01_task-rest_run-1_desc-eye_report.html   # QC report

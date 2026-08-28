@@ -24,6 +24,7 @@ dependencies = [
 
 [project.scripts]
 mreyextract = "mreyextract.cli:cli_main"
+mreyextract-view = "mreyextract.cli:viewer_cli_main"
 
 
 [project.optional-dependencies]

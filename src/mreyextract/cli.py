@@ -11,7 +11,8 @@ from bids.layout import Query
 
 from mreyextract import enable_logging
 from mreyextract.extract import extract_eyeball_voxels
-from mreyextract.io import ENTITIES
+from mreyextract.io import ENTITIES, mreyextract_root
+from mreyextract.viewer import REPORT_PATTERNS, serve_reports
 
 logger = logging.getLogger(__name__)
 
@@ -297,3 +298,93 @@ def cli_main() -> None:
     logger.info("Filtering files on %s", json.dumps(filters, default=str))
 
     run_default(args, filters)
+
+
+def viewer_cli_main() -> None:
+    """
+    Command-line entry point for the ``mreyextract-view`` console script.
+
+    Parses arguments and serves the quality-control viewer over the reports in a
+    dataset's MReyeXtract derivatives directory, or over any other directory of
+    reports given with ``--review-dir``.
+
+    Returns
+    -------
+    None
+    """
+    parser = argparse.ArgumentParser(
+        prog="mreyextract-view",
+        description="Review quality-control reports and rate them good or bad.",
+    )
+
+    parser.add_argument(
+        "--root",
+        type=str,
+        required=False,
+        help="Dataset root whose derivatives/mreyextract reports are reviewed. "
+        "Ignored if --review-dir is given.",
+    )
+
+    parser.add_argument(
+        "--review-dir",
+        type=Path,
+        required=False,
+        help="Directory of reports to review instead of a dataset's "
+        "derivatives/mreyextract. Use for reports written by another tool.",
+    )
+
+    parser.add_argument(
+        "--pattern",
+        nargs="+",
+        default=list(REPORT_PATTERNS),
+        required=False,
+        help="Glob(s), relative to the reviewed directory, selecting report "
+        f"files. Default is {' '.join(REPORT_PATTERNS)}",
+    )
+
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        required=False,
+        help="Interface to bind. Default is 127.0.0.1, which keeps the reports "
+        "off the network.",
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        required=False,
+        help="Port to serve on. Default is 8000; 0 picks any free port.",
+    )
+
+    parser.add_argument(
+        "--browser",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Whether to open the viewer in a browser. Default is True.",
+    )
+
+    parser.add_argument(
+        "--log-level",
+        default="INFO",
+        required=False,
+        help="Logging level (DEBUG, INFO, WARNING, ERROR).",
+    )
+
+    args = parser.parse_args()
+
+    if args.review_dir is None and args.root is None:
+        parser.error("one of --root or --review-dir is required")
+
+    enable_logging(level=args.log_level.upper())
+
+    review_dir = args.review_dir or mreyextract_root(args.root)
+
+    serve_reports(
+        review_dir=review_dir,
+        patterns=args.pattern,
+        host=args.host,
+        port=args.port,
+        open_browser=args.browser,
+    )
