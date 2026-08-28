@@ -24,6 +24,7 @@ dependencies = [
 
 [project.scripts]
 mreyextract = "mreyextract.cli:cli_main"
+mreyextract-view = "mreyextract.cli:viewer_cli_main"
 
 
 [project.optional-dependencies]
@@ -41,6 +42,11 @@ dev = [
 [project.urls]
 homepage = "https://github.com/DeepMReye"
 #repository = "https://github.com/yourusername/mreyemove"
+
+# ---- Formatting ----
+
+[tool.isort]
+profile = "black"
 
 # ---- Hatch config ----
 

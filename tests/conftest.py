@@ -62,6 +62,37 @@ def fmriprep_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
+def review_dir(tmp_path: Path) -> Path:
+    """A derivatives tree of QC reports, as the viewer expects to find them.
+
+    Covers both naming conventions (this package's and DeepMReye's), a report
+    outside any ``sub-*`` directory, and files that must be ignored: non-reports,
+    AppleDouble sidecars, and anything under a hidden directory.
+    Returns the resolved directory to review.
+    """
+    root = (tmp_path / "derivatives" / "mreyextract").resolve()
+
+    for name in (
+        "sub-01/func/sub-01_task-rest_run-1_desc-eye_report.html",
+        "sub-01/func/sub-01_task-rest_run-2_desc-eye_report.html",
+        "sub-02/func/sub-02_task-rest_run-1_desc-eye_report.html",
+        "report_group.html",
+        "sub-01/func/._sub-01_task-rest_run-1_desc-eye_report.html",
+        ".snapshot/sub-01/func/sub-01_task-rest_run-1_desc-eye_report.html",
+    ):
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"<html><body>{name}</body></html>")
+
+    (
+        root / "sub-01" / "func" / "sub-01_task-rest_run-1_desc-eye_bold.nii.gz"
+    ).write_bytes(b"")
+    (root / "dataset_description.json").write_text("{}")
+
+    return root
+
+
+@pytest.fixture
 def non_bids_root(tmp_path: Path) -> Path:
     """A plain (non-BIDS) tree containing NIfTI and non-NIfTI files."""
     root = (tmp_path / "raw").resolve()

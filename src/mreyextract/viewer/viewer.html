@@ -1,0 +1,607 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MReyeXtract QC</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1b1e24;
+    --panel-alt: #22262e;
+    --border: #2f343d;
+    --text: #e6e8ec;
+    --muted: #949aa6;
+    --good: #3fb37f;
+    --bad: #e0605e;
+    --unrated: #565c68;
+    --accent: #4a9fd8;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    height: 100vh;
+    display: grid;
+    grid-template-rows: auto 1fr;
+    /* Long report paths must never widen the page past the window: every strip
+       below is a flex row whose text shrinks (min-width: 0) while its controls
+       keep their size (flex: none). */
+    overflow: hidden;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  header h1 { flex: none; font-size: 15px; margin: 0; white-space: nowrap; }
+  header .paths { flex: 0 1 auto; min-width: 0; font-size: 12px; color: var(--muted); }
+  header .paths div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  header .spacer { flex: 1 1 0; }
+  header button { flex: none; }
+
+  .counts { display: flex; flex: none; gap: 12px; font-size: 12px; white-space: nowrap; }
+  .counts b { font-weight: 600; }
+  .counts .good b { color: var(--good); }
+  .counts .bad b { color: var(--bad); }
+  .counts .unrated b { color: var(--muted); }
+
+  main {
+    display: grid;
+    grid-template-columns: clamp(180px, 22%, 320px) 1fr;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  aside {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+  }
+
+  .filters { display: flex; gap: 6px; padding: 8px; border-bottom: 1px solid var(--border); }
+  .filters input { flex: 1; min-width: 0; }
+
+  .list { overflow-y: auto; padding-bottom: 24px; }
+
+  .group-heading {
+    position: sticky;
+    top: 0;
+    padding: 6px 12px;
+    background: var(--panel-alt);
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  .item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 12px;
+    border: 0;
+    border-left: 3px solid transparent;
+    background: none;
+    color: var(--text);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .item:hover { background: var(--panel-alt); }
+  .item.selected { background: var(--panel-alt); border-left-color: var(--accent); }
+  .item .label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item .note-marker { flex: none; margin-left: auto; color: var(--muted); font-size: 12px; }
+
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--unrated); }
+  .dot.good { background: var(--good); }
+  .dot.bad { background: var(--bad); }
+  .dot.saving { opacity: 0.4; }
+
+  section { display: grid; grid-template-rows: auto 1fr; min-width: 0; min-height: 0; }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+  }
+
+  /* The path is the only part that may shrink, so the rating buttons stay in
+     the window however deeply nested the report is. */
+  .toolbar .current {
+    flex: 1 1 40px;
+    min-width: 0;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    direction: rtl;
+    text-align: left;
+  }
+
+  .toolbar .note { flex: 0 1 200px; min-width: 90px; }
+  .toolbar button, .toolbar label.toggle { flex: none; }
+
+  button, input, select {
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--panel-alt);
+    color: var(--text);
+    font: inherit;
+  }
+
+  button { cursor: pointer; white-space: nowrap; }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button kbd { color: var(--muted); font: inherit; }
+
+  button.good.active { background: var(--good); border-color: var(--good); color: #10241b; }
+  button.good.active kbd { color: #10241b; }
+  button.bad.active { background: var(--bad); border-color: var(--bad); color: #2a1211; }
+  button.bad.active kbd { color: #2a1211; }
+
+  label.toggle { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+
+  /* Two frames: one showing the current report, one loading the next off the
+     mount in the background. Hidden with visibility (not display) so the
+     browser still fetches and paints it before it is swapped in. */
+  .stage { position: relative; min-width: 0; min-height: 0; }
+  .stage iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
+  .stage iframe.hidden { visibility: hidden; }
+
+  .empty { display: grid; place-items: center; height: 100%; padding: 24px; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MReyeXtract QC</h1>
+  <div class="paths">
+    <div id="review-dir"></div>
+    <div id="ratings-path"></div>
+  </div>
+  <div class="spacer"></div>
+  <div class="counts">
+    <span class="good">good <b id="count-good">0</b></span>
+    <span class="bad">bad <b id="count-bad">0</b></span>
+    <span class="unrated">unrated <b id="count-unrated">0</b></span>
+  </div>
+  <button id="reload" title="Re-scan the directory for reports">Reload</button>
+</header>
+
+<main>
+  <aside>
+    <div class="filters">
+      <input id="search" type="search" placeholder="Filter by name…" autocomplete="off">
+      <select id="status-filter">
+        <option value="all">All</option>
+        <option value="unrated">Unrated</option>
+        <option value="good">Good</option>
+        <option value="bad">Bad</option>
+      </select>
+    </div>
+    <div class="list" id="list"></div>
+  </aside>
+
+  <section>
+    <div class="toolbar">
+      <button id="prev" title="Previous report (up arrow)">↑</button>
+      <button id="next" title="Next report (down arrow)">↓</button>
+      <span class="current" id="current">No report selected</span>
+      <input class="note" id="note" placeholder="Note (saved on enter)" autocomplete="off">
+      <button class="good" id="mark-good">Good <kbd>g</kbd></button>
+      <button class="bad" id="mark-bad">Bad <kbd>b</kbd></button>
+      <button id="mark-unrated">Clear <kbd>u</kbd></button>
+      <label class="toggle"><input type="checkbox" id="advance" checked> advance</label>
+    </div>
+    <div class="stage">
+      <iframe id="frame-a" title="Quality-control report"></iframe>
+      <iframe id="frame-b" class="hidden" title="Next quality-control report"></iframe>
+    </div>
+  </section>
+</main>
+
+<script>
+const state = {
+  reports: [],
+  selected: null,
+  search: "",
+  statusFilter: "all",
+};
+
+// Verdicts waiting to be written, keyed by the report they belong to, and
+// whether a write is currently in flight.
+const outbox = new Map();
+let saving = false;
+
+// One frame holds the report on screen, the other pre-loads a neighbour. Their
+// dataset.path records what each currently holds, so revisiting a report that
+// is still in a frame costs nothing.
+const frames = [document.getElementById("frame-a"), document.getElementById("frame-b")];
+let active = 0;
+
+const elements = {
+  list: document.getElementById("list"),
+  current: document.getElementById("current"),
+  note: document.getElementById("note"),
+  search: document.getElementById("search"),
+  statusFilter: document.getElementById("status-filter"),
+  advance: document.getElementById("advance"),
+  reviewDir: document.getElementById("review-dir"),
+  ratingsPath: document.getElementById("ratings-path"),
+};
+
+function report(path) {
+  return state.reports.find((candidate) => candidate.relative_path === path);
+}
+
+// What the page shows for a report: the verdict waiting on a write if there is
+// one, otherwise the verdict the server has confirmed is in the ratings file.
+function verdict(entry) {
+  return entry.pending || entry.rating;
+}
+
+function visibleReports() {
+  const query = state.search.toLowerCase();
+  return state.reports.filter((entry) => {
+    const matchesStatus =
+      state.statusFilter === "all" || verdict(entry).status === state.statusFilter;
+    const matchesQuery = entry.relative_path.toLowerCase().includes(query);
+    return matchesStatus && matchesQuery;
+  });
+}
+
+function reportUrl(path) {
+  return "/report/" + path.split("/").map(encodeURIComponent).join("/");
+}
+
+async function load() {
+  const response = await fetch("/api/reports");
+  const data = await response.json();
+
+  state.reports = data.reports;
+  elements.reviewDir.textContent = data.review_dir;
+  elements.ratingsPath.textContent = "ratings → " + data.ratings_path;
+
+  if (!report(state.selected)) {
+    const first = visibleReports()[0];
+    state.selected = first ? first.relative_path : null;
+  }
+  render();
+  if (state.selected) {
+    show(state.selected);
+  }
+}
+
+function render() {
+  renderList();
+  renderCounts();
+  renderToolbar();
+}
+
+function renderList() {
+  const visible = visibleReports();
+  elements.list.replaceChildren();
+
+  if (visible.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = state.reports.length
+      ? "No reports match this filter."
+      : "No reports found in this directory.";
+    elements.list.append(empty);
+    return;
+  }
+
+  let subject = null;
+  for (const entry of visible) {
+    if (entry.subject !== subject) {
+      subject = entry.subject;
+      const heading = document.createElement("div");
+      heading.className = "group-heading";
+      heading.textContent = subject;
+      elements.list.append(heading);
+    }
+
+    const item = document.createElement("button");
+    item.className = "item" + (entry.relative_path === state.selected ? " selected" : "");
+    item.dataset.path = entry.relative_path;
+
+    const dot = document.createElement("span");
+    dot.className = "dot " + verdict(entry).status + (entry.pending ? " saving" : "");
+    dot.title = entry.pending ? "saving…" : "";
+    item.append(dot);
+
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = entry.label;
+    label.title = entry.relative_path;
+    item.append(label);
+
+    if (verdict(entry).note) {
+      const marker = document.createElement("span");
+      marker.className = "note-marker";
+      marker.textContent = "✎";
+      marker.title = verdict(entry).note;
+      item.append(marker);
+    }
+
+    item.addEventListener("click", () => show(entry.relative_path));
+    elements.list.append(item);
+  }
+}
+
+function renderCounts() {
+  // Counted from the confirmed verdicts, so the tally only moves once the
+  // ratings file on disk has actually changed.
+  const counts = { good: 0, bad: 0, unrated: 0 };
+  for (const entry of state.reports) {
+    counts[entry.rating.status] += 1;
+  }
+  document.getElementById("count-good").textContent = counts.good;
+  document.getElementById("count-bad").textContent = counts.bad;
+  document.getElementById("count-unrated").textContent = counts.unrated;
+}
+
+function renderToolbar() {
+  const entry = report(state.selected);
+  const status = entry ? verdict(entry).status : "unrated";
+
+  elements.current.textContent = entry ? entry.relative_path : "No report selected";
+  elements.current.title = entry ? entry.relative_path : "";
+  document.getElementById("mark-good").classList.toggle("active", status === "good");
+  document.getElementById("mark-bad").classList.toggle("active", status === "bad");
+
+  for (const id of ["prev", "next", "mark-good", "mark-bad", "mark-unrated"]) {
+    document.getElementById(id).disabled = !entry;
+  }
+  elements.note.disabled = !entry;
+
+  if (document.activeElement !== elements.note) {
+    elements.note.value = entry ? verdict(entry).note : "";
+  }
+}
+
+function show(path) {
+  const entry = report(path);
+  if (!entry) {
+    return;
+  }
+
+  state.selected = path;
+  const idle = frames[1 - active];
+
+  if (idle.dataset.path === path) {
+    // Pre-loaded in the background (or the report we came from): just swap.
+    active = 1 - active;
+    prefetch();
+  } else if (frames[active].dataset.path !== path) {
+    frames[active].dataset.path = path;
+    frames[active].src = reportUrl(path);
+  }
+
+  frames[active].classList.remove("hidden");
+  frames[1 - active].classList.add("hidden");
+  render();
+
+  const selected = elements.list.querySelector(".item.selected");
+  if (selected) {
+    selected.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function neighbour(offset) {
+  const visible = visibleReports();
+  if (visible.length === 0) {
+    return null;
+  }
+
+  const current = visible.findIndex((entry) => entry.relative_path === state.selected);
+  const index = Math.min(Math.max(current + offset, 0), visible.length - 1);
+  return visible[index].relative_path;
+}
+
+function step(offset) {
+  const path = neighbour(offset);
+  if (path) {
+    show(path);
+  }
+}
+
+function prefetch() {
+  const next = neighbour(1);
+  const idle = frames[1 - active];
+
+  if (next && next !== state.selected && idle.dataset.path !== next) {
+    idle.dataset.path = next;
+    idle.src = reportUrl(next);
+  }
+}
+
+function rate(status, note) {
+  const entry = report(state.selected);
+  if (!entry) {
+    return;
+  }
+
+  // The rated report may drop out of the current filter, so pick where to go
+  // next while it is still in the list.
+  const advance = elements.advance.checked && status !== "unrated";
+  const next = advance ? neighbour(1) : null;
+
+  const pending = {
+    status: status,
+    note: note === undefined ? verdict(entry).note : note,
+  };
+  entry.pending = pending;
+  outbox.set(entry, pending);
+
+  // Move on without waiting for the write: the ratings file may live on a
+  // network mount, and the next report is already loaded in the other frame.
+  save();
+
+  if (next && next !== state.selected) {
+    show(next);
+  } else {
+    render();
+  }
+}
+
+// Verdicts given while a write is in flight are sent together when it returns,
+// so rating quickly costs one write per round-trip instead of one per report.
+// No timer is involved: on a fast disk each verdict goes on its own, and the
+// slower the ratings file is to write, the more the batches coalesce.
+async function save() {
+  if (saving || outbox.size === 0) {
+    return;
+  }
+
+  saving = true;
+  const batch = Array.from(outbox, ([entry, pending]) => ({ entry, pending }));
+  outbox.clear();
+
+  try {
+    const response = await fetch("/api/rating", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ratings: batch.map(({ entry, pending }) => ({
+          path: entry.relative_path,
+          status: pending.status,
+          note: pending.note,
+        })),
+      }),
+    });
+
+    if (!response.ok) {
+      const failure = await response.json().catch(() => ({}));
+      throw new Error(failure.error || response.statusText);
+    }
+
+    // Only now are the verdicts in the ratings file, so only now do their
+    // reports take their colour.
+    const stored = new Map(
+      (await response.json()).ratings.map((item) => [item.path, item.rating])
+    );
+    for (const { entry } of batch) {
+      entry.rating = stored.get(entry.relative_path) || entry.rating;
+    }
+  } catch (error) {
+    // The verdicts are dropped, so each report falls back to the last one
+    // confirmed to be on disk.
+    window.alert(
+      "Could not save " + batch.length + " rating(s): " + error.message
+    );
+  } finally {
+    for (const { entry, pending } of batch) {
+      if (entry.pending === pending) {
+        entry.pending = null;
+      }
+    }
+    saving = false;
+    render();
+    save();
+  }
+}
+
+// Reading the current report off the mount comes first; the next one is only
+// fetched once that finishes, so the two never compete for the connection.
+for (const frame of frames) {
+  frame.addEventListener("load", () => {
+    if (!frame.classList.contains("hidden")) {
+      prefetch();
+    }
+  });
+}
+
+// Verdicts are written in the background, so a tab closed the instant after a
+// keypress could still have one in flight.
+window.addEventListener("beforeunload", (event) => {
+  if (saving || outbox.size > 0) {
+    event.preventDefault();
+    event.returnValue = "";
+  }
+});
+
+elements.search.addEventListener("input", (event) => {
+  state.search = event.target.value;
+  render();
+  prefetch();
+});
+
+elements.statusFilter.addEventListener("change", (event) => {
+  state.statusFilter = event.target.value;
+  render();
+  prefetch();
+});
+
+elements.note.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    const entry = report(state.selected);
+    rate(entry ? verdict(entry).status : "unrated", elements.note.value);
+    elements.note.blur();
+  }
+});
+
+elements.note.addEventListener("blur", () => {
+  const entry = report(state.selected);
+  if (entry && elements.note.value !== verdict(entry).note) {
+    rate(verdict(entry).status, elements.note.value);
+  }
+});
+
+document.getElementById("mark-good").addEventListener("click", () => rate("good"));
+document.getElementById("mark-bad").addEventListener("click", () => rate("bad"));
+document.getElementById("mark-unrated").addEventListener("click", () => rate("unrated"));
+document.getElementById("prev").addEventListener("click", () => step(-1));
+document.getElementById("next").addEventListener("click", () => step(1));
+document.getElementById("reload").addEventListener("click", load);
+
+document.addEventListener("keydown", (event) => {
+  const typing = ["INPUT", "SELECT", "TEXTAREA"].includes(event.target.tagName);
+  // A key held down repeats: one lean on the keyboard would otherwise rate a
+  // run of reports nobody has looked at.
+  if (typing || event.repeat || event.metaKey || event.ctrlKey || event.altKey) {
+    return;
+  }
+
+  const actions = {
+    g: () => rate("good"),
+    b: () => rate("bad"),
+    u: () => rate("unrated"),
+    ArrowDown: () => step(1),
+    ArrowUp: () => step(-1),
+  };
+
+  const action = actions[event.key];
+  if (action) {
+    event.preventDefault();
+    action();
+  }
+});
+
+load();
+</script>
+</body>
+</html>

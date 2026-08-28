@@ -6,7 +6,7 @@ Initialize logging for the package
 """
 
 import logging
-from typing import Protocol, Any
+from typing import Any, Protocol
 
 __all__ = ["enable_logging", "LOG_FORMAT"]
 
