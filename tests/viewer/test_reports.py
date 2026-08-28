@@ -11,6 +11,7 @@ from mreyextract.viewer.reports import (
     RatingStatus,
     find_reports,
     rate_report,
+    rate_reports,
     ratings_path,
     read_ratings,
     report_subject,
@@ -187,6 +188,38 @@ class TestRateReport:
 
         assert rating.note == "eye cut off"
         assert read_ratings(ratings_path(review_dir))["report_group.html"] == rating
+
+    def test_batch_is_written_in_one_pass(self, review_dir: Path):
+        stored = rate_reports(
+            review_dir,
+            {
+                "report_group.html": Rating(status=RatingStatus.GOOD),
+                "sub-01_report.html": Rating(
+                    status=RatingStatus.BAD, note="eye\tcut off"
+                ),
+            },
+        )
+
+        assert stored["sub-01_report.html"].note == "eye cut off"
+        assert read_ratings(ratings_path(review_dir)) == {
+            "report_group.html": Rating(status=RatingStatus.GOOD),
+            "sub-01_report.html": Rating(status=RatingStatus.BAD, note="eye cut off"),
+        }
+
+    def test_batch_can_clear_and_set_together(self, review_dir: Path):
+        rate_report(review_dir, "report_group.html", RatingStatus.GOOD)
+
+        rate_reports(
+            review_dir,
+            {
+                "report_group.html": Rating(status=RatingStatus.UNRATED),
+                "sub-01_report.html": Rating(status=RatingStatus.BAD),
+            },
+        )
+
+        assert read_ratings(ratings_path(review_dir)) == {
+            "sub-01_report.html": Rating(status=RatingStatus.BAD)
+        }
 
     def test_overlapping_verdicts_are_all_kept(self, review_dir: Path):
         # The viewer rates on a background request per keypress, so held keys

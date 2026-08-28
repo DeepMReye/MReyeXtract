@@ -2,20 +2,18 @@
 Preprocessing pipeline to clean and extract eye voxels from fmri data
 """
 
+import logging
 import os
 import re
 from functools import lru_cache
 from pathlib import Path
 
-import logging
-
+from bids import BIDSLayout, BIDSLayoutIndexer
 from joblib import Parallel, delayed
 from joblib.externals.loky import cpu_count as loky_cpu_count
 
-from bids import BIDSLayout, BIDSLayoutIndexer
-
-from mreyextract import preprocess, _ensure_worker_logging
-from mreyextract.io import mreyextract_root, RunPaths, PATTERN, DESC_ADD
+from mreyextract import _ensure_worker_logging, preprocess
+from mreyextract.io import DESC_ADD, PATTERN, RunPaths, mreyextract_root
 
 logger = logging.getLogger(__name__)
 

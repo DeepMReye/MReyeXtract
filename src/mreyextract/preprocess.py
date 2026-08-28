@@ -1,9 +1,9 @@
 import pickle
 from importlib.resources import as_file, files
+from pathlib import Path
 
 import ants
 import numpy as np
-from pathlib import Path
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.io import loadmat

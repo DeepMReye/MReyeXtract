@@ -43,6 +43,11 @@ dev = [
 homepage = "https://github.com/DeepMReye"
 #repository = "https://github.com/yourusername/mreyemove"
 
+# ---- Formatting ----
+
+[tool.isort]
+profile = "black"
+
 # ---- Hatch config ----
 
 # Tell hatchling which *paths* to package.

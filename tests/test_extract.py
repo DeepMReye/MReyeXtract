@@ -82,9 +82,7 @@ class TestNonBidsPaths:
         )
         rp = run_paths[0]
         rel = rp.out_eye_path.relative_to(out_dir)
-        assert rel == Path(
-            f"sub-01/func/sub-01_task-rest_run-1_bold_{DESC_ADD}.nii.gz"
-        )
+        assert rel == Path(f"sub-01/func/sub-01_task-rest_run-1_bold_{DESC_ADD}.nii.gz")
         assert rp.out_report_path.name == (
             f"sub-01_task-rest_run-1_bold_{DESC_ADD}_report.html"
         )
@@ -220,9 +218,7 @@ class TestBidsPaths:
         run_paths = extract.bids_paths(
             root=bids_root, derivatives_dir=None, output_dir=out_dir, as_pickle=True
         )
-        assert run_paths[0].out_eye_path.name.endswith(
-            f"_desc-{DESC_ADD}_bold.pkl"
-        )
+        assert run_paths[0].out_eye_path.name.endswith(f"_desc-{DESC_ADD}_bold.pkl")
 
     def test_filters_select_files(self, bids_root: Path, tmp_path: Path):
         out_dir = (tmp_path / "out").resolve()
@@ -326,9 +322,7 @@ class TestBidsPathsDerivatives:
         out_dir = (tmp_path / "out").resolve()
         run_paths = self._run(fmriprep_root, out_dir)
 
-        preproc = next(
-            rp for rp in run_paths if "desc-preproc" in rp.out_eye_path.name
-        )
+        preproc = next(rp for rp in run_paths if "desc-preproc" in rp.out_eye_path.name)
         assert preproc.out_report_path.name.endswith(
             f"_desc-preproc_{DESC_ADD}_report.html"
         )
@@ -337,12 +331,8 @@ class TestBidsPathsDerivatives:
         out_dir = (tmp_path / "out").resolve()
         run_paths = self._run(fmriprep_root, out_dir, as_pickle=True)
 
-        preproc = next(
-            rp for rp in run_paths if "desc-preproc" in rp.out_eye_path.name
-        )
-        assert preproc.out_eye_path.name.endswith(
-            f"_desc-preproc_{DESC_ADD}_bold.pkl"
-        )
+        preproc = next(rp for rp in run_paths if "desc-preproc" in rp.out_eye_path.name)
+        assert preproc.out_eye_path.name.endswith(f"_desc-preproc_{DESC_ADD}_bold.pkl")
 
     def test_outputs_mirror_layout(self, fmriprep_root: Path, tmp_path: Path):
         out_dir = (tmp_path / "out").resolve()

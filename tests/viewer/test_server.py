@@ -149,10 +149,52 @@ class TestRating:
         )
 
         assert status == 200
-        assert body == {"path": REPORT, "rating": {"status": "bad", "note": "blurry"}}
+        assert body == {
+            "ratings": [{"path": REPORT, "rating": {"status": "bad", "note": "blurry"}}]
+        }
         assert read_ratings(ratings_path(review_dir)) == {
             REPORT: Rating(status=RatingStatus.BAD, note="blurry")
         }
+
+    def test_records_a_batch(self, client: HTTPConnection, review_dir: Path):
+        other = "sub-02/func/sub-02_task-rest_run-1_desc-eye_report.html"
+
+        status, body = post(
+            client,
+            "/api/rating",
+            {
+                "ratings": [
+                    {"path": REPORT, "status": "good"},
+                    {"path": other, "status": "bad", "note": "misaligned"},
+                ]
+            },
+        )
+
+        assert status == 200
+        assert [item["path"] for item in body["ratings"]] == [REPORT, other]
+        assert read_ratings(ratings_path(review_dir)) == {
+            REPORT: Rating(status=RatingStatus.GOOD),
+            other: Rating(status=RatingStatus.BAD, note="misaligned"),
+        }
+
+    def test_a_rejected_batch_writes_nothing(
+        self, client: HTTPConnection, review_dir: Path
+    ):
+        other = "sub-02/func/sub-02_task-rest_run-1_desc-eye_report.html"
+
+        status, _ = post(
+            client,
+            "/api/rating",
+            {
+                "ratings": [
+                    {"path": REPORT, "status": "good"},
+                    {"path": other, "status": "maybe"},
+                ]
+            },
+        )
+
+        assert status == 400
+        assert not ratings_path(review_dir).exists()
 
     def test_verdict_shows_up_in_the_index(self, client: HTTPConnection):
         post(client, "/api/rating", {"path": REPORT, "status": "good"})

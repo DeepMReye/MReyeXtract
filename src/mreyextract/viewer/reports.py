@@ -418,9 +418,7 @@ def rate_reports(
         The verdicts as stored, with notes normalised.
     """
     stored = {
-        relative_path: Rating(
-            status=rating.status, note=" ".join(rating.note.split())
-        )
+        relative_path: Rating(status=rating.status, note=" ".join(rating.note.split()))
         for relative_path, rating in verdicts.items()
     }
 
